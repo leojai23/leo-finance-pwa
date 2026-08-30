@@ -32,33 +32,35 @@ Live at `https://leojai23.github.io/leo-finance-pwa/`.
 
 When `index.html` changes, bump `CACHE_NAME` in `sw.js` so clients pick it up.
 
-## What's in v1
+## What's built
 
 | Area | Status |
 |---|---|
 | Accounts (bank / cash / wallet), balances | ✅ |
-| Categories — seeded set, add/edit, ★ favourite, R routine | ✅ |
+| Categories — seeded set, add/edit, ★ favourite, R routine, monthly budget | ✅ |
 | Transactions — quick-add expense / income / transfer, edit, delete, undo | ✅ |
-| Home — Income / Expenses / Assets / Net worth tiles, routine checklist, recent | ✅ |
-| Money — accounts, holdings (invested vs current), fixed assets | ✅ |
+| Home — Income / Expenses / Assets / Net-worth tiles, "Due now", routine checklist, recent | ✅ |
+| Money — accounts, holdings (invested vs current, valuation history, buy/sell), fixed assets | ✅ |
+| Credit cards — spend from card, manual statements (total/min/due), pay-bill flow, in net worth | ✅ |
 | People — loans lent & borrowed, repayments, optional auto-posted transfer | ✅ |
-| Reports — category donut, Needs/Wants/Savings, daily bars, category drill | ✅ |
-| Settings — theme (Day/Sepia/Dark/Night), month-start day, JSON export/import, wipe | ✅ |
+| Recurring & routines — monthly/weekly, auto-post on boot or "Due now" Confirm/Skip | ✅ |
+| Savings goals — target + date, progress bar, ₹/mo needed | ✅ |
+| Reports — donut, Needs/Wants/Savings, budgets, daily bars, calendar heatmap, 6-month compare | ✅ |
+| Settings — theme (Day/Sepia/Dark/Night), month-start day, JSON export/import, recurring & category editors | ✅ |
 | Offline / installable PWA | ✅ |
 
-## Not yet built (next passes, per the spec)
+## Rough edges / not yet done
 
-- Credit-card module: manual statements (total / min / due), 4 cards, payment tracking
-- Recurring / routine automation: `Recurring` records, auto-post, pending cards on Home
-- Reports: calendar heatmap, 6-month comparison, budget progress bars
-- Savings goals (target amount + date)
-- Asset types editor + per-holding valuation history (`ValuationEntry`) + buy/sell flows
+- Asset types are a fixed preset list (no user-defined types yet)
+- Recurring reminders are in-app only (no notifications — by design for a Pages PWA)
+- No multi-currency, bank CSV import, or cloud sync (deferred per the spec)
 
 ## Data model
 
-Stores in IndexedDB `leo-finance`: `accounts`, `categories`, `transactions`,
-`holdings`, `loans`, `loanEntries`, `fixedAssets`, `recurring`, plus `meta`
-(settings, seed flag). Amounts are integer **paise**. Full model in the design spec.
+Stores in IndexedDB `leo-finance` (v2): `accounts`, `categories`, `transactions`,
+`holdings`, `valuations`, `loans`, `loanEntries`, `fixedAssets`, `recurring`,
+`creditCards`, `cardStatements`, `goals`, plus `meta` (settings, seed flag).
+Amounts are integer **paise**. Full model in the design spec.
 
 ## Backup
 
