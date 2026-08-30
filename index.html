@@ -820,9 +820,9 @@ function renderReports(){
   const delta = prevTotal? Math.round((total-prevTotal)/prevTotal*100) : 0;
 
   // by category
-  const byCat = {};
-  exp.forEach(t=>{ byCat[t.categoryId]=(byCat[t.categoryId]||0)+t.amount; });
-  const cats = Object.entries(byCat).map(([id,amt])=>({c:catById(id)||{name:'—',color:'#8b938d',icon:'•'},amt}))
+  const byCat = {}, byCatN = {};
+  exp.forEach(t=>{ byCat[t.categoryId]=(byCat[t.categoryId]||0)+t.amount; byCatN[t.categoryId]=(byCatN[t.categoryId]||0)+1; });
+  const cats = Object.entries(byCat).map(([id,amt])=>({c:catById(id)||{name:'Uncategorised',color:'#8b938d',icon:'•'},amt,n:byCatN[id]||0}))
                  .sort((a,b)=>b.amt-a.amt);
   let acc=0; const stops = cats.map(x=>{ const from=acc/total*360; acc+=x.amt; const to=acc/total*360; return `${x.c.color} ${from}deg ${to}deg`; });
   const donutBG = total>0 ? `conic-gradient(${stops.join(',')})` : 'var(--panel-2)';
@@ -930,7 +930,7 @@ function renderReports(){
     <div class="card tight">
       ${cats.length? cats.map(x=>`<div class="row tappable" data-catdrill="${x.c.id||''}">
         <div class="ic" style="background:${x.c.color}22">${x.c.icon}</div>
-        <div class="rmain"><div class="rtitle">${esc(x.c.name)}</div><div class="rsub">${exp.filter(t=>catById(t.categoryId)===x.c).length} txns</div></div>
+        <div class="rmain"><div class="rtitle">${esc(x.c.name)}</div><div class="rsub">${x.n} txn${x.n===1?'':'s'}</div></div>
         <div class="ramt tnum">${money(x.amt)}</div>
       </div>`).join('') : `<div class="empty">—</div>`}
     </div>
@@ -1495,7 +1495,6 @@ function openCardPay(card, st){
 function openGoalSheet(g){
   const e = g && g.id;
   g = Object.assign({id:uid(), name:'', targetAmount:0, targetDate:'', savedAmount:0, createdAt:new Date().toISOString()}, g||{});
-  const accOpts = cache.accounts.filter(a=>!a.archived).map(a=>`<option value="${a.id}">${esc(a.name)}</option>`).join('');
   openSheet(`
     <h2>${e?'Savings goal':'Add savings goal'}</h2>
     <label class="fld"><span class="lbl">Name</span><input id="gn" value="${esc(g.name)}" placeholder="e.g. Emergency fund"></label>
@@ -1702,7 +1701,7 @@ function openCategoryManager(){
     <div class="card tight" style="margin-top:12px; max-height:52vh; overflow:auto">
       ${rows.map(c=>`<div class="row" style="flex-wrap:wrap">
         <div class="ic" style="background:${c.color}22">${c.icon}</div>
-        <div class="rmain"><div class="rtitle">${esc(c.name)}</div>
+        <div class="rmain tappable" data-editc="${c.id}" style="cursor:pointer"><div class="rtitle">${esc(c.name)}</div>
           <div class="rsub">${c.kind} · ${c.class}${c.isRoutine?' · routine':''}${c.isFavourite?' · ★':''}</div></div>
         <button class="btn sm" data-favc="${c.id}">${c.isFavourite?'★':'☆'}</button>
         <button class="btn sm" data-rtc="${c.id}">${c.isRoutine?'R':'r'}</button>
@@ -1713,13 +1712,14 @@ function openCategoryManager(){
         </div>`:''}
       </div>`).join('')}
     </div>
-    <p class="hintline">★ = quick-pick on Add. R = routine checklist. Budgets show as progress bars on Reports.</p>
+    <p class="hintline">Tap a name to rename / recolour. ★ = quick-pick on Add. R = routine checklist.</p>
   `);
   $('#ncAdd').onclick = async ()=>{
     const name = $('#ncName').value.trim(); if(!name) return;
     await idbPut('categories', {id:uid(), name, kind:$('#ncKind').value, class:'na', isRoutine:false, isFavourite:false, icon:'•', color:'#8b938d', order:99, monthlyBudget:0});
     await reloadCache(); openCategoryManager();
   };
+  $$('[data-editc]').forEach(el=> el.onclick = ()=> openCategorySheet(catById(el.dataset.editc)));
   $$('[data-favc]').forEach(b=> b.onclick = async ()=>{ const c=catById(b.dataset.favc); c.isFavourite=!c.isFavourite; await idbPut('categories',c); await reloadCache(); openCategoryManager(); });
   $$('[data-rtc]').forEach(b=> b.onclick = async ()=>{ const c=catById(b.dataset.rtc); c.isRoutine=!c.isRoutine; await idbPut('categories',c); await reloadCache(); openCategoryManager(); });
   $$('[data-budc]').forEach(inp=> inp.onchange = async ()=>{ const c=catById(inp.dataset.budc); c.monthlyBudget=parseAmount(inp.value); await idbPut('categories',c); await reloadCache(); toast('Budget set'); });
@@ -1727,6 +1727,34 @@ function openCategoryManager(){
     if(cache.transactions.some(t=>t.categoryId===b.dataset.delc)) return toast('In use — cannot delete');
     await idbDel('categories', b.dataset.delc); await reloadCache(); openCategoryManager();
   });
+}
+const CAT_COLORS = ['#1f7a54','#2f6b8a','#3f4fa0','#5a3f8f','#7a3f8f','#b04a7a','#a3384c','#b0472e','#b07d1f','#7a5230','#5a7a2f','#2f8a8a','#45526e','#5a635e','#8b938d'];
+function openCategorySheet(c){
+  if(!c) return;
+  openSheet(`
+    <h2>Edit category</h2>
+    <div class="btnrow">
+      <label class="fld" style="flex:2"><span class="lbl">Name</span><input id="ceName" value="${esc(c.name)}"></label>
+      <label class="fld" style="flex:1"><span class="lbl">Icon</span><input id="ceIcon" value="${esc(c.icon)}" maxlength="2"></label>
+    </div>
+    <label class="fld"><span class="lbl">Class (for the Needs / Wants / Savings split)</span><select id="ceClass">
+      ${['need','want','saving','debt','na'].map(k=>`<option ${c.class===k?'selected':''}>${k}</option>`).join('')}</select></label>
+    <div class="lbl">Colour</div>
+    <div class="chips" id="ceColors" style="margin-bottom:14px">
+      ${CAT_COLORS.map(col=>`<button class="chip" data-col="${col}" style="border-color:${col};${c.color===col?`background:${col};color:#fff`:''}"><span style="width:12px;height:12px;border-radius:3px;background:${col};display:inline-block"></span></button>`).join('')}
+    </div>
+    <button class="btn primary wide" id="ceSave">Save</button>
+  `);
+  let color = c.color;
+  $('#ceColors').onclick = e=>{ const b=e.target.closest('button'); if(!b) return; color=b.dataset.col;
+    $$('#ceColors button').forEach(x=>{ const on=x.dataset.col===color; x.style.background=on?color:''; x.style.color=on?'#fff':''; }); };
+  $('#ceSave').onclick = async ()=>{
+    c.name = $('#ceName').value.trim() || c.name;
+    c.icon = $('#ceIcon').value.trim() || c.icon;
+    c.class = $('#ceClass').value;
+    c.color = color;
+    await idbPut('categories', c); await reloadCache(); closeSheet(); openCategoryManager(); toast('Saved');
+  };
 }
 
 /* ============================================================
