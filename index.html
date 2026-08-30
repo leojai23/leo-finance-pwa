@@ -366,8 +366,9 @@ function toast(msg, actionLabel, actionFn){
 /* ============================================================
    1. IndexedDB layer
    ============================================================ */
-const DB_NAME='leo-finance', DB_VER=1;
-const STORES=['accounts','categories','transactions','holdings','loans','loanEntries','fixedAssets','recurring'];
+const DB_NAME='leo-finance', DB_VER=2;
+const STORES=['accounts','categories','transactions','holdings','loans','loanEntries','fixedAssets','recurring',
+              'creditCards','cardStatements','goals','valuations'];
 let _db=null;
 function openDB(){
   return new Promise((res,rej)=>{
@@ -391,7 +392,8 @@ const metaPut   = (k,v) => new Promise((res,rej)=>{ const r=_db.transaction('met
 /* ============================================================
    2. In-memory cache + store helpers
    ============================================================ */
-const cache = { accounts:[], categories:[], transactions:[], holdings:[], loans:[], loanEntries:[], fixedAssets:[], recurring:[] };
+const cache = { accounts:[], categories:[], transactions:[], holdings:[], loans:[], loanEntries:[], fixedAssets:[], recurring:[],
+                creditCards:[], cardStatements:[], goals:[], valuations:[] };
 let settings = { monthStartDay:1, theme:'day', locale:'en-IN' };
 
 async function reloadCache(){
@@ -400,17 +402,21 @@ async function reloadCache(){
   cache.transactions.sort((a,b)=> (b.date+b.createdAt).localeCompare(a.date+a.createdAt));
   cache.accounts.sort((a,b)=> (a.order||0)-(b.order||0));
   cache.categories.sort((a,b)=> (a.order||0)-(b.order||0));
+  cache.creditCards.sort((a,b)=> (a.order||0)-(b.order||0));
 }
 async function saveSettings(patch){ settings = Object.assign(settings, patch); await metaPut('settings', settings); }
 
-const catById = id => cache.categories.find(c=>c.id===id);
-const accById = id => cache.accounts.find(a=>a.id===id);
+const catById  = id => cache.categories.find(c=>c.id===id);
+const accById  = id => cache.accounts.find(a=>a.id===id);
 const loanById = id => cache.loans.find(l=>l.id===id);
+const cardById = id => cache.creditCards.find(c=>c.id===id);
+const goalById = id => cache.goals.find(g=>g.id===id);
 
-/* nodeName: resolve a from/to id to a display label (account, loan, holding, or literal) */
+/* nodeName: resolve a from/to id to a display label (account, card, loan, holding, or literal) */
 function nodeName(id){
   if(!id) return '';
   const a = accById(id); if(a) return a.name;
+  const c = cardById(id); if(c) return c.name;
   const l = loanById(id); if(l) return (l.direction==='lent'?'Loan · ':'Debt · ')+l.person;
   const h = cache.holdings.find(x=>x.id===id); if(h) return h.label;
   return '';
@@ -439,11 +445,26 @@ const totalOwed   = ()=> cache.loans.filter(l=>l.direction==='borrowed'&& l.stat
 const holdingsCur = ()=> cache.holdings.reduce((s,h)=>s+(h.currentValue||0),0);
 const holdingsInv = ()=> cache.holdings.reduce((s,h)=>s+(h.investedValue||0),0);
 
+/* credit card outstanding = spends charged to it − payments made to it */
+function cardOutstanding(cardId){
+  let bal = 0;
+  for(const t of cache.transactions){
+    if(t.fromId===cardId) bal += t.amount;   // a spend on the card
+    if(t.toId===cardId)   bal -= t.amount;   // a payment toward the card
+  }
+  return Math.max(0, bal);
+}
+const totalCardDebt = ()=> cache.creditCards.filter(c=>!c.archived).reduce((s,c)=>s+cardOutstanding(c.id),0);
+const latestStatement = cardId => cache.cardStatements
+  .filter(s=>s.cardId===cardId).sort((a,b)=>(b.statementDate||'').localeCompare(a.statementDate||''))[0];
+
 function netWorthParts(){
   const cash=liquidCash(), hold=holdingsCur(), lent=totalLent();
   const assets = cash + hold + lent;
-  const liab = totalOwed(); // + card outstanding when that module lands
-  return { cash, hold, lent, assets, liab, net: assets - liab };
+  const cards = totalCardDebt();
+  const people = totalOwed();
+  const liab = cards + people;
+  return { cash, hold, lent, assets, cards, people, liab, net: assets - liab };
 }
 
 /* ---- period sums ---- */
@@ -452,6 +473,35 @@ function periodTxns(ref){
   return cache.transactions.filter(t=>inRange(t.date,b));
 }
 const sumKind = (txns,kind)=> txns.filter(t=>t.kind===kind).reduce((s,t)=>s+t.amount,0);
+
+/* ---- recurring ---- */
+function advanceDate(iso, freq){
+  const d = new Date(iso+'T00:00:00');
+  if(freq==='weekly'){ d.setDate(d.getDate()+7); }
+  else { const day=d.getDate(); d.setMonth(d.getMonth()+1); if(d.getDate()<day) d.setDate(0); }
+  return d.toLocaleDateString('en-CA');
+}
+function txFromRecurring(r, dateISO){
+  return { id:uid(), amount:r.amount, kind:r.kind, fromId:r.fromId||null, toId:r.toId||null,
+    categoryId:r.categoryId, date:dateISO||todayISO(), note:r.name, tags:['recurring'], recurringId:r.id, createdAt:new Date().toISOString() };
+}
+/* auto-post everything due for autoPost recurrings; returns list still pending (manual) */
+async function processRecurring(){
+  const today = todayISO();
+  let posted = false;
+  for(const r of cache.recurring){
+    if(!r.autoPost) continue;
+    let guard = 0;
+    while(r.nextDueDate && r.nextDueDate <= today && guard++ < 60){
+      await idbPut('transactions', txFromRecurring(r, r.nextDueDate));
+      r.nextDueDate = advanceDate(r.nextDueDate, r.frequency);
+      await idbPut('recurring', r);
+      posted = true;
+    }
+  }
+  if(posted) await reloadCache();
+}
+const pendingRecurring = ()=> cache.recurring.filter(r=>!r.autoPost && r.nextDueDate && r.nextDueDate <= todayISO());
 
 /* ============================================================
    3. Seed data (first run)
@@ -535,6 +585,7 @@ function renderHome(){
   const paidRoutine = new Set(P.filter(t=>t.kind!=='income').map(t=>t.categoryId));
   const routineDone = routineCats.filter(c=>paidRoutine.has(c.id)).length;
 
+  const pending = pendingRecurring();
   const recent = cache.transactions.slice(0,8);
 
   view.innerHTML = `
@@ -545,8 +596,19 @@ function renderHome(){
       <div class="tile"><div class="t-label">Assets (liquid)</div><div class="t-val sm tnum">${moneyR(nw.assets)}</div>
         <div class="t-note">cash ${moneyR(nw.cash)} · inv ${moneyR(nw.hold)} · lent ${moneyR(nw.lent)}</div></div>
       <div class="tile"><div class="t-label">Net worth</div><div class="t-val sm tnum ${nw.net<0?'neg':''}">${moneyR(nw.net)}</div>
-        <div class="t-note">owed to people ${moneyR(nw.liab)}</div></div>
+        <div class="t-note">cards ${moneyR(nw.cards)} · people ${moneyR(nw.people)}</div></div>
     </div>
+
+    ${pending.length? `<div class="section-label">Due now · ${pending.length}</div>
+    <div class="card tight" id="pendingCard">
+      ${pending.map(r=>`<div class="row">
+        <div class="ic">🔔</div>
+        <div class="rmain"><div class="rtitle">${esc(r.name)}</div>
+          <div class="rsub">${esc(catById(r.categoryId)?.name||r.kind)} · due ${fmtDay(r.nextDueDate)}</div></div>
+        <div class="ramt tnum">${money(r.amount)}
+          <small><button class="btn sm" data-conf="${r.id}">Confirm</button> <button class="btn sm ghost" data-skip="${r.id}">Skip</button></small></div>
+      </div>`).join('')}
+    </div>`:''}
 
     <div class="section-label">Balance ${inc-exp>=0?'surplus':'shortfall'} this period</div>
     <div class="card tight"><div class="row" style="border:0;padding:4px">
@@ -571,6 +633,17 @@ function renderHome(){
     <div class="card tight">${recent.length? recent.map(txRow).join('') : `<div class="empty"><span class="big">🧾</span>No transactions yet.<br>Tap <b>+</b> to add one.</div>`}</div>
   `;
   $$('#routineCard .row[data-cat]').forEach(r=> r.onclick = ()=> openAddSheet({categoryId:r.dataset.cat, kind:'expense'}));
+  $$('#pendingCard [data-conf]').forEach(b=> b.onclick = async ()=>{
+    const r = cache.recurring.find(x=>x.id===b.dataset.conf); if(!r) return;
+    await idbPut('transactions', txFromRecurring(r, r.nextDueDate));
+    r.nextDueDate = advanceDate(r.nextDueDate, r.frequency); await idbPut('recurring', r);
+    await reloadCache(); render(); toast('Posted '+r.name);
+  });
+  $$('#pendingCard [data-skip]').forEach(b=> b.onclick = async ()=>{
+    const r = cache.recurring.find(x=>x.id===b.dataset.skip); if(!r) return;
+    r.nextDueDate = advanceDate(r.nextDueDate, r.frequency); await idbPut('recurring', r);
+    await reloadCache(); render(); toast('Skipped '+r.name);
+  });
   wireTxRows();
 }
 
@@ -635,17 +708,49 @@ function renderMoney(){
       <div class="row"><button class="btn ghost" id="addFixed">+ Add fixed asset</button></div>
     </div>
 
-    <div class="card tight" style="margin-top:14px">
-      <div class="row" style="border:0"><div class="rmain"><div class="rtitle">Credit cards</div>
-      <div class="rsub">Manual statements — coming in the next build</div></div><span class="badge">soon</span></div>
+    <div class="section-label">Credit cards · owe ${moneyR(totalCardDebt())}</div>
+    <div class="card tight">
+      ${cache.creditCards.filter(c=>!c.archived).length? cache.creditCards.filter(c=>!c.archived).map(c=>{
+        const os = cardOutstanding(c.id); const st = latestStatement(c.id);
+        const paidPill = st ? (st.status==='paid'?'<span class="badge pos">paid</span>' : st.status==='partial'?'<span class="badge">part</span>' : '<span class="badge neg">unpaid</span>') : '';
+        return `<div class="row tappable" data-card="${c.id}">
+          <div class="ic">💳</div>
+          <div class="rmain"><div class="rtitle">${esc(c.name)} ${paidPill}</div>
+            <div class="rsub">${st? 'bill '+moneyR(st.totalDue)+' · due '+fmtDay(st.dueDate) : 'no statement yet'}</div></div>
+          <div class="ramt tnum ${os>0?'neg':'faint'}">${money(os)}<small>outstanding</small></div>
+        </div>`;
+      }).join('') : `<div class="empty">No cards yet</div>`}
+      <div class="row"><button class="btn ghost" id="addCard">+ Add credit card</button></div>
+    </div>
+
+    <div class="section-label">Savings goals</div>
+    <div class="card tight">
+      ${cache.goals.length? cache.goals.map(g=>{
+        const pct = g.targetAmount? Math.min(100, Math.round((g.savedAmount||0)/g.targetAmount*100)) : 0;
+        const monthsLeft = g.targetDate? Math.max(1, Math.round((new Date(g.targetDate)-new Date())/2629800000)) : null;
+        const need = monthsLeft? Math.max(0, (g.targetAmount-(g.savedAmount||0))/monthsLeft) : null;
+        return `<div class="row tappable" data-goal="${g.id}" style="flex-wrap:wrap">
+          <div class="ic">🎯</div>
+          <div class="rmain"><div class="rtitle">${esc(g.name)}</div>
+            <div class="rsub">${moneyR(g.savedAmount||0)} of ${moneyR(g.targetAmount)}${need!=null? ' · '+moneyR(need)+'/mo needed':''}</div></div>
+          <div class="ramt tnum">${pct}%</div>
+          <div style="flex-basis:100%;height:6px;background:var(--panel-2);border-radius:4px;margin-top:6px">
+            <div style="width:${pct}%;height:100%;background:var(--accent);border-radius:4px"></div></div>
+        </div>`;
+      }).join('') : `<div class="empty">No goals yet</div>`}
+      <div class="row"><button class="btn ghost" id="addGoal">+ Add savings goal</button></div>
     </div>
   `;
   $('#addAcc').onclick = ()=> openAccountSheet();
   $('#addHold').onclick = ()=> openHoldingSheet();
   $('#addFixed').onclick = ()=> openFixedSheet();
+  $('#addCard').onclick = ()=> openCardSheet();
+  $('#addGoal').onclick = ()=> openGoalSheet();
   $$('[data-acc]').forEach(r=> r.onclick = ()=> openAccountSheet(accById(r.dataset.acc)));
   $$('[data-hold]').forEach(r=> r.onclick = ()=> openHoldingSheet(cache.holdings.find(h=>h.id===r.dataset.hold)));
   $$('[data-fixed]').forEach(r=> r.onclick = ()=> openFixedSheet(cache.fixedAssets.find(f=>f.id===r.dataset.fixed)));
+  $$('[data-card]').forEach(r=> r.onclick = ()=> openCardSheet(cardById(r.dataset.card)));
+  $$('[data-goal]').forEach(r=> r.onclick = ()=> openGoalSheet(goalById(r.dataset.goal)));
 }
 
 /* ---------- PEOPLE ---------- */
@@ -709,11 +814,31 @@ function renderReports(){
   const clsTotal = Object.values(cls).reduce((a,b)=>a+b,0)||1;
   const clsColor = {need:'var(--pos)',want:'var(--neg)',saving:'var(--neu)',debt:'var(--warn)',na:'var(--border-strong)'};
 
-  // daily bars
+  // daily bars + calendar heatmap
   const dayMap = {};
   exp.forEach(t=>{ dayMap[t.date]=(dayMap[t.date]||0)+t.amount; });
   const days=[]; for(let d=new Date(b.start); d<b.end && d<=new Date(); d.setDate(d.getDate()+1)){ const iso=d.toLocaleDateString('en-CA'); days.push([iso, dayMap[iso]||0]); }
   const maxDay = Math.max(1, ...days.map(d=>d[1]));
+
+  // full calendar grid for the period (Sun-first weeks)
+  const calCells=[]; { const first=new Date(b.start); const lead=first.getDay();
+    for(let i=0;i<lead;i++) calCells.push(null);
+    for(let d=new Date(b.start); d<b.end; d.setDate(d.getDate()+1)){ const iso=d.toLocaleDateString('en-CA'); calCells.push([iso, dayMap[iso]||0, d.getDate()]); } }
+  const calMax = Math.max(1, ...calCells.filter(Boolean).map(c=>c[1]));
+
+  // 6-month comparison (period totals)
+  const months=[]; let ref=todayISO();
+  for(let i=0;i<6;i++){
+    const mb = periodBounds(settings.monthStartDay, ref);
+    const mt = cache.transactions.filter(t=>t.kind==='expense' && inRange(t.date,mb)).reduce((s,t)=>s+t.amount,0);
+    months.unshift([mb.start.toLocaleDateString('en-IN',{month:'short'}), mt, i===0]);
+    ref = new Date(mb.start.getTime()-864e5).toLocaleDateString('en-CA');
+  }
+  const monthsMax = Math.max(1, ...months.map(m=>m[1]));
+
+  // budgets
+  const budgets = cache.categories.filter(c=>c.monthlyBudget>0).map(c=>({c, spent: byCat[c.id]||0}))
+                    .sort((a,b)=> (b.spent/b.c.monthlyBudget) - (a.spent/a.c.monthlyBudget));
 
   view.innerHTML = `
     <div class="view-title">Reports</div>
@@ -747,10 +872,39 @@ function renderReports(){
       </div>
     </div>`:''}
 
+    ${budgets.length?`<div class="section-label">Budgets</div>
+    <div class="card tight">
+      ${budgets.map(({c,spent})=>{ const pct=Math.round(spent/c.monthlyBudget*100); const over=spent>c.monthlyBudget;
+        return `<div class="row" style="flex-wrap:wrap" data-catdrill="${c.id}">
+          <div class="ic" style="background:${c.color}22">${c.icon}</div>
+          <div class="rmain"><div class="rtitle">${esc(c.name)}</div>
+            <div class="rsub">${moneyR(spent)} of ${moneyR(c.monthlyBudget)}${over?' · over by '+moneyR(spent-c.monthlyBudget):''}</div></div>
+          <div class="ramt tnum ${over?'neg':''}">${pct}%</div>
+          <div style="flex-basis:100%;height:6px;background:var(--panel-2);border-radius:4px;margin-top:6px">
+            <div style="width:${Math.min(100,pct)}%;height:100%;background:${over?'var(--neg)':'var(--accent)'};border-radius:4px"></div></div>
+        </div>`; }).join('')}
+    </div>`:''}
+
     ${total>0?`<div class="section-label">Daily spend</div>
     <div class="card">
       <div class="bars">${days.map(([iso,v])=>`<div class="b ${iso===todayISO()?'today':''}" style="height:${Math.max(2,Math.round(v/maxDay*96))}px" title="${fmtDay(iso)} ${money(v)}"></div>`).join('')}</div>
       <div class="bars-x"><span>${days.length?fmtDay(days[0][0]):''}</span><span>${days.length?fmtDay(days[days.length-1][0]):''}</span></div>
+    </div>
+
+    <div class="section-label">Calendar</div>
+    <div class="card">
+      <div style="display:grid;grid-template-columns:repeat(7,1fr);gap:4px">
+        ${['S','M','T','W','T','F','S'].map(d=>`<div class="faint" style="text-align:center;font-size:.62rem">${d}</div>`).join('')}
+        ${calCells.map(cell=> cell===null ? `<div></div>` : (()=>{ const [iso,v,dn]=cell; const int=v/calMax;
+          const bg = v>0 ? `color-mix(in srgb, var(--accent) ${Math.round(20+int*80)}%, var(--panel-2))` : 'var(--panel-2)';
+          return `<div ${v>0?`class="calday" data-calday="${iso}"`:''} style="aspect-ratio:1;border-radius:5px;background:${bg};display:grid;place-items:center;font-size:.6rem;color:${int>.5?'var(--on-accent)':'var(--text-faint)'}" title="${fmtDay(iso)} ${money(v)}">${dn}</div>`; })()).join('')}
+      </div>
+    </div>
+
+    <div class="section-label">Last 6 months</div>
+    <div class="card">
+      <div class="bars" style="height:80px">${months.map(([lbl,v,cur])=>`<div class="b ${cur?'today':''}" style="height:${Math.max(2,Math.round(v/monthsMax*80))}px" title="${lbl} ${money(v)}"></div>`).join('')}</div>
+      <div class="bars-x">${months.map(([lbl])=>`<span>${lbl}</span>`).join('')}</div>
     </div>`:''}
 
     <div class="section-label">By category</div>
@@ -763,6 +917,14 @@ function renderReports(){
     </div>
   `;
   $$('[data-catdrill]').forEach(r=> r.onclick = ()=> openCatDrill(r.dataset.catdrill));
+  $$('[data-calday]').forEach(r=> r.onclick = ()=> openDayDrill(r.dataset.calday));
+}
+function openDayDrill(iso){
+  const list = cache.transactions.filter(t=>t.date===iso).sort((a,b)=>(b.createdAt||'').localeCompare(a.createdAt||''));
+  openSheet(`<h2>${fmtDay(iso)}</h2>
+    <div class="view-sub">${list.length} transactions · spent ${money(list.filter(t=>t.kind==='expense').reduce((s,t)=>s+t.amount,0))}</div>
+    <div class="card tight">${list.map(txRow).join('')||'<div class="empty">None</div>'}</div>`);
+  wireTxRows();
 }
 function openCatDrill(catId){
   const c = catById(catId)||{name:'—'};
@@ -797,7 +959,12 @@ function openAddSheet(seed){
 }
 function drawAddSheet(editing){
   const d = addDraft;
-  const accOpts = sel => cache.accounts.filter(a=>!a.archived).map(a=>`<option value="${a.id}" ${sel===a.id?'selected':''}>${esc(a.name)} · ${money(accountBalance(a.id))}</option>`).join('');
+  const accOpts = (sel,withCards) => {
+    let o = cache.accounts.filter(a=>!a.archived).map(a=>`<option value="${a.id}" ${sel===a.id?'selected':''}>${esc(a.name)} · ${money(accountBalance(a.id))}</option>`).join('');
+    if(withCards && cache.creditCards.filter(c=>!c.archived).length)
+      o += `<optgroup label="Credit cards">` + cache.creditCards.filter(c=>!c.archived).map(c=>`<option value="${c.id}" ${sel===c.id?'selected':''}>${esc(c.name)} · owe ${money(cardOutstanding(c.id))}</option>`).join('') + `</optgroup>`;
+    return o;
+  };
   const cats = cache.categories.filter(c=> d.kind==='transfer' ? (c.kind==='transfer') : c.kind===d.kind || (d.kind==='expense'&&c.kind==='transfer'&&c.class==='debt'));
   const favs = cats.filter(c=>c.isFavourite);
 
@@ -813,12 +980,12 @@ function drawAddSheet(editing){
     </label>
 
     ${d.kind==='transfer' ? `
-      <label class="fld"><span class="lbl">From</span><select id="fromId">${accOpts(d.fromId)}</select></label>
-      <label class="fld"><span class="lbl">To</span><select id="toId">${accOpts(d.toId)}</select></label>
+      <label class="fld"><span class="lbl">From</span><select id="fromId">${accOpts(d.fromId,true)}</select></label>
+      <label class="fld"><span class="lbl">To</span><select id="toId">${accOpts(d.toId,true)}</select></label>
     ` : d.kind==='income' ? `
       <label class="fld"><span class="lbl">Into account</span><select id="toId">${accOpts(d.toId)}</select></label>
     ` : `
-      <label class="fld"><span class="lbl">Paid from</span><select id="fromId">${accOpts(d.fromId)}</select></label>
+      <label class="fld"><span class="lbl">Paid from</span><select id="fromId">${accOpts(d.fromId,true)}</select></label>
     `}
 
     ${favs.length && !editing ? `<div class="lbl">Quick pick</div><div class="chips" style="margin-bottom:12px" id="favChips">
@@ -912,8 +1079,17 @@ const HOLDING_TYPES = [
   ['Stocks / Shares','shares','📈'],['Mutual Funds','units','📊'],['Gold','g','🪙'],
   ['Land / Real estate','sqft','🌾'],['FD / RD','','🏦'],['Crypto','coins','₿'],['Other','','📦']
 ];
+function sparkline(vals, w=220, ht=40){
+  if(vals.length<2) return '';
+  const mn=Math.min(...vals), mx=Math.max(...vals), rng=(mx-mn)||1;
+  const pts = vals.map((v,i)=>`${(i/(vals.length-1)*w).toFixed(1)},${(ht-(v-mn)/rng*ht).toFixed(1)}`).join(' ');
+  return `<svg viewBox="0 0 ${w} ${ht}" width="100%" height="${ht}" preserveAspectRatio="none">
+    <polyline points="${pts}" fill="none" stroke="var(--accent)" stroke-width="2" vector-effect="non-scaling-stroke"/></svg>`;
+}
 function openHoldingSheet(h){
   const e = !!h; h = h || {id:uid(), label:'', typeName:'Stocks / Shares', quantity:'', investedValue:0, currentValue:0, icon:'📈', buyDate:todayISO(), note:''};
+  const hist = e ? cache.valuations.filter(v=>v.holdingId===h.id).sort((a,b)=>a.date.localeCompare(b.date)) : [];
+  const accOpts = cache.accounts.filter(a=>!a.archived).map(a=>`<option value="${a.id}">${esc(a.name)} · ${money(accountBalance(a.id))}</option>`).join('');
   openSheet(`
     <h2>${e?'Edit holding':'Add holding'}</h2>
     <label class="fld"><span class="lbl">Type</span><select id="ht">
@@ -924,20 +1100,69 @@ function openHoldingSheet(h){
     <label class="fld"><span class="lbl">Current value (₹)</span><input id="hc" inputmode="decimal" value="${h.currentValue? (h.currentValue/100):''}" placeholder="0"></label>
     <label class="fld"><span class="lbl">Note</span><input id="hn" value="${esc(h.note||'')}"></label>
     <button class="btn primary wide" id="sv">${e?'Save':'Add'}</button>
-    ${e?`<div class="btnrow" style="margin-top:10px"><button class="btn danger wide" id="dl">Delete</button></div>`:''}
-    <p class="hintline">Current value feeds Net Worth. Gain = current − invested.</p>
+    <p class="hintline">Current value feeds Net Worth. Saving a new current value records a dated point below.</p>
+    ${e?`
+      ${hist.length>1?`<div class="section-label" style="margin:14px 0 4px">Value history</div>
+      <div class="card tight">${sparkline(hist.map(v=>v.value))}
+        <div class="bars-x"><span>${fmtDay(hist[0].date)}</span><span>${money(hist[hist.length-1].value)}</span></div></div>`:''}
+      <div class="divider"></div>
+      <div class="section-label" style="margin:0 0 6px">Buy more / sell</div>
+      <div class="btnrow">
+        <input id="bsQty" placeholder="units" style="max-width:80px">
+        <input id="bsAmt" inputmode="decimal" placeholder="₹ amount" style="flex:1">
+        <select id="bsAcc" style="max-width:110px">${accOpts}</select>
+      </div>
+      <div class="btnrow" style="margin-top:8px">
+        <button class="btn sm" id="buyBtn">Buy more</button>
+        <button class="btn sm" id="sellBtn">Sell</button>
+        <button class="btn sm danger" id="dl" style="margin-left:auto">Delete</button>
+      </div>
+    `:''}
   `);
-  $('#sv').onclick = async ()=>{
+  const commit = async (writeValuation)=>{
     h.typeName = $('#ht').value;
     h.icon = (HOLDING_TYPES.find(t=>t[0]===h.typeName)||[])[2] || '📦';
     h.label = $('#hl').value.trim() || h.typeName;
     h.quantity = $('#hq').value.trim();
     h.investedValue = parseAmount($('#hi').value);
-    h.currentValue  = parseAmount($('#hc').value);
+    const newCur = parseAmount($('#hc').value);
+    const changed = newCur !== (h.currentValue||0);
+    h.currentValue = newCur;
     h.note = $('#hn').value.trim();
-    await idbPut('holdings', h); await reloadCache(); closeSheet(); render(); toast('Saved');
+    await idbPut('holdings', h);
+    if(writeValuation && changed && newCur>0) await idbPut('valuations', {id:uid(), holdingId:h.id, date:todayISO(), value:newCur});
   };
-  if(e) $('#dl').onclick = async ()=>{ await idbDel('holdings', h.id); await reloadCache(); closeSheet(); render(); toast('Deleted'); };
+  $('#sv').onclick = async ()=>{ await commit(true); await reloadCache(); closeSheet(); render(); toast('Saved'); };
+  if(e){
+    $('#buyBtn').onclick = async ()=>{
+      const amt=parseAmount($('#bsAmt').value); if(amt<=0) return toast('Enter amount');
+      const acc=$('#bsAcc').value;
+      await idbPut('transactions', {id:uid(), amount:amt, kind:'transfer', fromId:acc, toId:h.id,
+        categoryId:(cache.categories.find(c=>c.class==='saving')||{}).id, date:todayISO(), note:'Buy · '+h.label, tags:['invest'], createdAt:new Date().toISOString()});
+      h.investedValue=(h.investedValue||0)+amt; h.currentValue=(h.currentValue||0)+amt;
+      const q=parseFloat($('#bsQty').value); if(!isNaN(q)) h.quantity=String((parseFloat(h.quantity)||0)+q);
+      await idbPut('holdings',h); await reloadCache(); closeSheet(); render(); toast('Bought');
+    };
+    $('#sellBtn').onclick = async ()=>{
+      const amt=parseAmount($('#bsAmt').value); if(amt<=0) return toast('Enter proceeds');
+      const acc=$('#bsAcc').value;
+      const frac = h.currentValue? Math.min(1, amt/h.currentValue) : 1;
+      const costOut = Math.round((h.investedValue||0)*frac);
+      await idbPut('transactions', {id:uid(), amount:amt, kind:'transfer', fromId:h.id, toId:acc,
+        categoryId:(cache.categories.find(c=>c.class==='saving')||{}).id, date:todayISO(),
+        note:'Sell · '+h.label+' (realised '+moneyR(amt-costOut)+')', tags:['invest'], createdAt:new Date().toISOString()});
+      h.investedValue=Math.max(0,(h.investedValue||0)-costOut); h.currentValue=Math.max(0,(h.currentValue||0)-amt);
+      const q=parseFloat($('#bsQty').value); if(!isNaN(q)) h.quantity=String(Math.max(0,(parseFloat(h.quantity)||0)-q));
+      await idbPut('holdings',h);
+      if(h.currentValue<=0 && h.investedValue<=0) await idbDel('holdings',h.id);
+      await reloadCache(); closeSheet(); render(); toast('Sold');
+    };
+    $('#dl').onclick = async ()=>{
+      await idbDel('holdings', h.id);
+      for(const v of cache.valuations.filter(v=>v.holdingId===h.id)) await idbDel('valuations', v.id);
+      await reloadCache(); closeSheet(); render(); toast('Deleted');
+    };
+  }
 }
 
 function openFixedSheet(f){
@@ -1043,6 +1268,216 @@ function openLoanSheet(l){
 }
 
 /* ============================================================
+   6b. Sheets — Credit card + statements
+   ============================================================ */
+function openCardSheet(c){
+  const e = c && c.id;
+  c = Object.assign({id:uid(), name:'', creditLimit:0, billingCycleDay:1, dueDay:18, archived:false, order:cache.creditCards.length}, c||{});
+  const os = e ? cardOutstanding(c.id) : 0;
+  const stmts = e ? cache.cardStatements.filter(s=>s.cardId===c.id).sort((a,b)=>(b.statementDate||'').localeCompare(a.statementDate||'')) : [];
+  const accOpts = cache.accounts.filter(a=>!a.archived).map(a=>`<option value="${a.id}">${esc(a.name)}</option>`).join('');
+  openSheet(`
+    <h2>${e?'Credit card':'Add credit card'}</h2>
+    <label class="fld"><span class="lbl">Name</span><input id="cn" value="${esc(c.name)}" placeholder="e.g. HDFC Millennia"></label>
+    <div class="btnrow">
+      <label class="fld" style="flex:1"><span class="lbl">Credit limit (₹)</span><input id="cl" inputmode="decimal" value="${c.creditLimit? (c.creditLimit/100):''}"></label>
+      <label class="fld" style="flex:1"><span class="lbl">Bill day</span><input id="cb" inputmode="numeric" value="${c.billingCycleDay}"></label>
+      <label class="fld" style="flex:1"><span class="lbl">Due day</span><input id="cd" inputmode="numeric" value="${c.dueDay}"></label>
+    </div>
+    <button class="btn primary wide" id="sv">${e?'Save':'Add'}</button>
+    ${e?`
+      <div class="divider"></div>
+      <div class="view-sub">Current outstanding <b class="tnum ${os>0?'neg':''}">${money(os)}</b> · limit ${moneyR(c.creditLimit)}</div>
+
+      <div class="section-label" style="margin:12px 0 6px">Statements</div>
+      <div class="card tight" style="margin:0 0 12px">
+        ${stmts.length? stmts.map(s=>`<div class="row">
+          <div class="rmain"><div class="rtitle tnum">${money(s.totalDue)} <span class="badge ${s.status==='paid'?'pos':s.status==='partial'?'':'neg'}">${s.status}</span></div>
+            <div class="rsub">stmt ${fmtDay(s.statementDate)} · due ${fmtDay(s.dueDate)} · min ${moneyR(s.minDue)} · paid ${moneyR(s.amountPaid||0)}</div></div>
+          <button class="btn sm" data-pay="${s.id}">Pay</button>
+        </div>`).join('') : '<div class="empty">No statements</div>'}
+      </div>
+
+      <div class="section-label" style="margin:0 0 6px">Add statement (from bank message)</div>
+      <div class="btnrow">
+        <label class="fld" style="flex:1"><span class="lbl">Total due ₹</span><input id="stTot" inputmode="decimal"></label>
+        <label class="fld" style="flex:1"><span class="lbl">Min due ₹</span><input id="stMin" inputmode="decimal"></label>
+      </div>
+      <div class="btnrow">
+        <label class="fld" style="flex:1"><span class="lbl">Statement date</span><input type="date" id="stDate" value="${todayISO()}"></label>
+        <label class="fld" style="flex:1"><span class="lbl">Due date</span><input type="date" id="stDue"></label>
+      </div>
+      <button class="btn wide" id="addStmt">Save statement</button>
+
+      <div class="btnrow" style="margin-top:12px">
+        <button class="btn sm danger" id="dl">Delete card</button>
+      </div>
+    `:''}
+  `);
+  $('#sv').onclick = async ()=>{
+    c.name = $('#cn').value.trim() || 'Card';
+    c.creditLimit = parseAmount($('#cl').value);
+    c.billingCycleDay = Math.min(28, Math.max(1, +$('#cb').value||1));
+    c.dueDay = Math.min(28, Math.max(1, +$('#cd').value||18));
+    await idbPut('creditCards', c); await reloadCache(); closeSheet(); render(); toast('Saved');
+  };
+  if(e){
+    $('#addStmt').onclick = async ()=>{
+      const tot = parseAmount($('#stTot').value); if(tot<=0) return toast('Enter total due');
+      await idbPut('cardStatements', { id:uid(), cardId:c.id, statementDate:$('#stDate').value||todayISO(),
+        periodStart:'', periodEnd:'', totalDue:tot, minDue:parseAmount($('#stMin').value),
+        dueDate:$('#stDue').value||'', amountPaid:0, status:'unpaid' });
+      await reloadCache(); closeSheet(); openCardSheet(cardById(c.id)); toast('Statement saved');
+    };
+    $$('[data-pay]').forEach(b=> b.onclick = ()=> openCardPay(c, cache.cardStatements.find(s=>s.id===b.dataset.pay)));
+    $('#dl').onclick = async ()=>{
+      if(!confirm('Delete this card? Its transactions stay.')) return;
+      await idbDel('creditCards', c.id);
+      for(const s of cache.cardStatements.filter(s=>s.cardId===c.id)) await idbDel('cardStatements', s.id);
+      await reloadCache(); closeSheet(); render(); toast('Deleted');
+    };
+  }
+}
+function openCardPay(card, st){
+  const accOpts = cache.accounts.filter(a=>!a.archived).map(a=>`<option value="${a.id}">${esc(a.name)} · ${money(accountBalance(a.id))}</option>`).join('');
+  const remain = st.totalDue - (st.amountPaid||0);
+  openSheet(`
+    <h2>Pay ${esc(card.name)}</h2>
+    <div class="view-sub">Statement ${money(st.totalDue)} · already paid ${moneyR(st.amountPaid||0)} · remaining ${money(remain)}</div>
+    <label class="fld"><span class="lbl">Pay from</span><select id="pf">${accOpts}</select></label>
+    <label class="fld"><span class="lbl">Amount ₹</span><input id="pa" class="amount-input" inputmode="decimal" value="${remain>0?(remain/100):''}"></label>
+    <div class="chips" style="margin-bottom:12px">
+      <button class="chip" data-set="${remain}">Remaining</button>
+      <button class="chip" data-set="${st.totalDue}">Full bill</button>
+      <button class="chip" data-set="${st.minDue}">Minimum</button>
+    </div>
+    <button class="btn primary wide" id="doPay">Pay</button>
+  `);
+  $$('[data-set]').forEach(b=> b.onclick = ()=> $('#pa').value = (+b.dataset.set/100));
+  $('#doPay').onclick = async ()=>{
+    const amt = parseAmount($('#pa').value); if(amt<=0) return toast('Enter amount');
+    const cat = cache.categories.find(x=>x.name==='Credit card payment') || cache.categories.find(x=>x.kind==='transfer');
+    await idbPut('transactions', { id:uid(), amount:amt, kind:'transfer', fromId:$('#pf').value, toId:card.id,
+      categoryId: cat && cat.id, date:todayISO(), note:'Bill payment · '+card.name, tags:[], createdAt:new Date().toISOString() });
+    st.amountPaid = (st.amountPaid||0) + amt;
+    st.status = st.amountPaid >= st.totalDue ? 'paid' : 'partial';
+    await idbPut('cardStatements', st);
+    await reloadCache(); closeSheet(); render(); toast('Payment recorded');
+  };
+}
+
+/* ============================================================
+   6c. Sheets — Savings goal
+   ============================================================ */
+function openGoalSheet(g){
+  const e = g && g.id;
+  g = Object.assign({id:uid(), name:'', targetAmount:0, targetDate:'', savedAmount:0, createdAt:new Date().toISOString()}, g||{});
+  const accOpts = cache.accounts.filter(a=>!a.archived).map(a=>`<option value="${a.id}">${esc(a.name)}</option>`).join('');
+  openSheet(`
+    <h2>${e?'Savings goal':'Add savings goal'}</h2>
+    <label class="fld"><span class="lbl">Name</span><input id="gn" value="${esc(g.name)}" placeholder="e.g. Emergency fund"></label>
+    <label class="fld"><span class="lbl">Target amount (₹)</span><input id="gt" inputmode="decimal" value="${g.targetAmount? (g.targetAmount/100):''}"></label>
+    <label class="fld"><span class="lbl">Target date (optional)</span><input type="date" id="gd" value="${g.targetDate||''}"></label>
+    <label class="fld"><span class="lbl">Already saved (₹)</span><input id="gs" inputmode="decimal" value="${g.savedAmount? (g.savedAmount/100):''}"></label>
+    <button class="btn primary wide" id="sv">${e?'Save':'Add'}</button>
+    ${e?`
+      <div class="divider"></div>
+      <div class="inline-add">
+        <input id="addAmt" inputmode="decimal" placeholder="Add to goal ₹">
+        <button class="btn sm" id="contrib">Add</button>
+      </div>
+      <p class="hintline">Tracks progress only. Log the actual money move as a <b>SIP / RD / Savings</b> transfer into a holding.</p>
+      <div class="btnrow" style="margin-top:10px"><button class="btn sm danger" id="dl">Delete goal</button></div>
+    `:''}
+  `);
+  $('#sv').onclick = async ()=>{
+    g.name = $('#gn').value.trim() || 'Goal';
+    g.targetAmount = parseAmount($('#gt').value);
+    g.targetDate = $('#gd').value || '';
+    g.savedAmount = parseAmount($('#gs').value);
+    await idbPut('goals', g); await reloadCache(); closeSheet(); render(); toast('Saved');
+  };
+  if(e){
+    $('#contrib').onclick = async ()=>{
+      const amt = parseAmount($('#addAmt').value); if(amt<=0) return toast('Enter amount');
+      g.savedAmount = (g.savedAmount||0) + amt; await idbPut('goals', g);
+      await reloadCache(); closeSheet(); render(); toast('Added to '+g.name);
+    };
+    $('#dl').onclick = async ()=>{ await idbDel('goals', g.id); await reloadCache(); closeSheet(); render(); toast('Deleted'); };
+  }
+}
+
+/* ============================================================
+   6d. Sheets — Recurring
+   ============================================================ */
+function openRecurringManager(){
+  openSheet(`
+    <h2>Recurring & routines</h2>
+    <p class="hintline">Auto-post fires silently on the due date. Otherwise it waits as a &ldquo;Due now&rdquo; card on Home.</p>
+    <div class="card tight" style="margin:12px 0">
+      ${cache.recurring.length? cache.recurring.slice().sort((a,b)=>(a.nextDueDate||'').localeCompare(b.nextDueDate||'')).map(r=>`
+        <div class="row tappable" data-rec="${r.id}">
+          <div class="ic">${r.autoPost?'⚙️':'🔔'}</div>
+          <div class="rmain"><div class="rtitle">${esc(r.name)}</div>
+            <div class="rsub">${moneyR(r.amount)} · ${r.frequency} · next ${fmtDay(r.nextDueDate)} · ${r.autoPost?'auto':'manual'}</div></div>
+        </div>`).join('') : '<div class="empty">Nothing recurring yet</div>'}
+      <div class="row"><button class="btn ghost" id="addRec">+ Add recurring item</button></div>
+    </div>
+  `);
+  $('#addRec').onclick = ()=> openRecurringSheet();
+  $$('[data-rec]').forEach(r=> r.onclick = ()=> openRecurringSheet(cache.recurring.find(x=>x.id===r.dataset.rec)));
+}
+function openRecurringSheet(r){
+  const e = r && r.id;
+  r = Object.assign({id:uid(), name:'', kind:'expense', amount:0, isAmountFixed:true, categoryId:null,
+    fromId:(cache.accounts[0]||{}).id||null, toId:null, frequency:'monthly', dayOfMonth:1,
+    nextDueDate:todayISO(), autoPost:false}, r||{});
+  const accOpts = (sel,withCards)=>{
+    let o = `<option value="">—</option>` + cache.accounts.filter(a=>!a.archived).map(a=>`<option value="${a.id}" ${sel===a.id?'selected':''}>${esc(a.name)}</option>`).join('');
+    if(withCards) o += cache.creditCards.map(c=>`<option value="${c.id}" ${sel===c.id?'selected':''}>${esc(c.name)} (card)</option>`).join('');
+    return o;
+  };
+  const catOpts = cache.categories.filter(c=> r.kind==='transfer'?c.kind==='transfer':c.kind===r.kind)
+    .map(c=>`<option value="${c.id}" ${r.categoryId===c.id?'selected':''}>${c.icon} ${esc(c.name)}</option>`).join('');
+  openSheet(`
+    <h2>${e?'Edit recurring':'Add recurring'}</h2>
+    <label class="fld"><span class="lbl">Name</span><input id="rn" value="${esc(r.name)}" placeholder="e.g. House rent"></label>
+    <label class="fld"><span class="lbl">Type</span><select id="rk">
+      ${['expense','income','transfer'].map(k=>`<option ${r.kind===k?'selected':''}>${k}</option>`).join('')}</select></label>
+    <label class="fld"><span class="lbl">Amount (₹)</span><input id="ra" inputmode="decimal" value="${r.amount?(r.amount/100):''}"></label>
+    <label class="fld"><span class="lbl">Category</span><select id="rc">${catOpts}</select></label>
+    ${r.kind!=='income'?`<label class="fld"><span class="lbl">From</span><select id="rf">${accOpts(r.fromId,true)}</select></label>`:''}
+    ${r.kind!=='expense'?`<label class="fld"><span class="lbl">To</span><select id="rt">${accOpts(r.toId,r.kind==='transfer')}</select></label>`:''}
+    <div class="btnrow">
+      <label class="fld" style="flex:1"><span class="lbl">Frequency</span><select id="rfr">
+        <option ${r.frequency==='monthly'?'selected':''}>monthly</option><option ${r.frequency==='weekly'?'selected':''}>weekly</option></select></label>
+      <label class="fld" style="flex:1"><span class="lbl">Next due</span><input type="date" id="rd" value="${r.nextDueDate}"></label>
+    </div>
+    <label class="fld"><span class="lbl" style="display:flex;justify-content:space-between">Auto-post on due date
+      <input type="checkbox" id="rap" ${r.autoPost?'checked':''} style="width:auto"></span></label>
+    <button class="btn primary wide" id="sv">${e?'Save':'Add'}</button>
+    ${e?`<div class="btnrow" style="margin-top:10px"><button class="btn danger wide" id="dl">Delete</button></div>`:''}
+  `);
+  $('#rk').onchange = ()=>{ r.kind = $('#rk').value; r.categoryId=null; openRecurringSheet(r); };
+  $('#sv').onclick = async ()=>{
+    r.name = $('#rn').value.trim() || 'Recurring';
+    r.kind = $('#rk').value;
+    r.amount = parseAmount($('#ra').value);
+    r.categoryId = $('#rc').value || null;
+    r.fromId = $('#rf') ? ($('#rf').value||null) : null;
+    r.toId = $('#rt') ? ($('#rt').value||null) : null;
+    r.frequency = $('#rfr').value;
+    r.nextDueDate = $('#rd').value || todayISO();
+    r.autoPost = $('#rap').checked;
+    if(r.amount<=0) return toast('Enter an amount');
+    await idbPut('recurring', r);
+    await processRecurring();
+    await reloadCache(); closeSheet(); render(); toast('Saved');
+  };
+  if(e) $('#dl').onclick = async ()=>{ await idbDel('recurring', r.id); await reloadCache(); closeSheet(); render(); toast('Deleted'); };
+}
+
+/* ============================================================
    7. Settings sheet
    ============================================================ */
 const THEMES = [['day','Day'],['sepia','Sepia'],['dark','Dark'],['night','Night']];
@@ -1073,10 +1508,11 @@ function openSettings(){
     <div class="divider"></div>
     <div class="section-label" style="margin:0 0 8px">Manage</div>
     <div class="btnrow">
-      <button class="btn sm" id="mgCats">Categories</button>
+      <button class="btn sm" id="mgRec">Recurring & routines</button>
+      <button class="btn sm" id="mgCats">Categories & budgets</button>
       <button class="btn sm danger" id="wipeBtn">Erase all data</button>
     </div>
-    <p class="hintline">Leo Finance v1 · single user · INR · offline. Modules still to come: credit-card statements, recurring automation, calendar heatmap, budgets.</p>
+    <p class="hintline">Leo Finance v1 · single user · INR · offline. Not yet built: per-holding valuation history &amp; buy/sell flows.</p>
   `);
   $('#thSeg').onclick = e=>{ const b=e.target.closest('button'); if(!b) return;
     $$('#thSeg button').forEach(x=>x.classList.toggle('on',x===b));
@@ -1086,6 +1522,7 @@ function openSettings(){
   $('#expBtn').onclick = exportJSON;
   $('#impBtn').onclick = ()=> $('#impFile').click();
   $('#impFile').onchange = importJSON;
+  $('#mgRec').onclick = openRecurringManager;
   $('#mgCats').onclick = openCategoryManager;
   $('#wipeBtn').onclick = wipeAll;
 }
@@ -1130,23 +1567,27 @@ async function wipeAll(){
 function openCategoryManager(){
   const rows = cache.categories.slice().sort((a,b)=>(a.kind).localeCompare(b.kind)||(a.order||0)-(b.order||0));
   openSheet(`
-    <h2>Categories</h2>
+    <h2>Categories &amp; budgets</h2>
     <div class="inline-add">
       <input id="ncName" placeholder="New category name">
-      <select id="ncKind"><option value="expense">Expense</option><option value="income">Income</option><option value="transfer">Transfer</option></select>
+      <select id="ncKind" style="max-width:120px"><option value="expense">Expense</option><option value="income">Income</option><option value="transfer">Transfer</option></select>
       <button class="btn sm" id="ncAdd">Add</button>
     </div>
-    <div class="card tight" style="margin-top:12px; max-height:46vh; overflow:auto">
-      ${rows.map(c=>`<div class="row">
+    <div class="card tight" style="margin-top:12px; max-height:52vh; overflow:auto">
+      ${rows.map(c=>`<div class="row" style="flex-wrap:wrap">
         <div class="ic" style="background:${c.color}22">${c.icon}</div>
         <div class="rmain"><div class="rtitle">${esc(c.name)}</div>
           <div class="rsub">${c.kind} · ${c.class}${c.isRoutine?' · routine':''}${c.isFavourite?' · ★':''}</div></div>
         <button class="btn sm" data-favc="${c.id}">${c.isFavourite?'★':'☆'}</button>
         <button class="btn sm" data-rtc="${c.id}">${c.isRoutine?'R':'r'}</button>
         <button class="btn sm danger" data-delc="${c.id}">✕</button>
+        ${c.kind==='expense'?`<div style="flex-basis:100%;display:flex;align-items:center;gap:8px;margin-top:6px">
+          <span class="lbl" style="margin:0">Budget/mo ₹</span>
+          <input data-budc="${c.id}" inputmode="decimal" value="${c.monthlyBudget?(c.monthlyBudget/100):''}" placeholder="0" style="max-width:120px;padding:6px 8px">
+        </div>`:''}
       </div>`).join('')}
     </div>
-    <p class="hintline">★ = quick-pick on Add. R = counts in the routine checklist.</p>
+    <p class="hintline">★ = quick-pick on Add. R = routine checklist. Budgets show as progress bars on Reports.</p>
   `);
   $('#ncAdd').onclick = async ()=>{
     const name = $('#ncName').value.trim(); if(!name) return;
@@ -1155,6 +1596,7 @@ function openCategoryManager(){
   };
   $$('[data-favc]').forEach(b=> b.onclick = async ()=>{ const c=catById(b.dataset.favc); c.isFavourite=!c.isFavourite; await idbPut('categories',c); await reloadCache(); openCategoryManager(); });
   $$('[data-rtc]').forEach(b=> b.onclick = async ()=>{ const c=catById(b.dataset.rtc); c.isRoutine=!c.isRoutine; await idbPut('categories',c); await reloadCache(); openCategoryManager(); });
+  $$('[data-budc]').forEach(inp=> inp.onchange = async ()=>{ const c=catById(inp.dataset.budc); c.monthlyBudget=parseAmount(inp.value); await idbPut('categories',c); await reloadCache(); toast('Budget set'); });
   $$('[data-delc]').forEach(b=> b.onclick = async ()=>{
     if(cache.transactions.some(t=>t.categoryId===b.dataset.delc)) return toast('In use — cannot delete');
     await idbDel('categories', b.dataset.delc); await reloadCache(); openCategoryManager();
@@ -1178,6 +1620,7 @@ $('#btnSettings').addEventListener('click', openSettings);
     await openDB();
     await seedIfNeeded();
     await reloadCache();
+    await processRecurring();
     applyTheme(settings.theme || localStorage.getItem('leofin-theme') || 'day');
     render();
   }catch(err){
