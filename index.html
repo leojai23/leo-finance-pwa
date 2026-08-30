@@ -366,9 +366,9 @@ function toast(msg, actionLabel, actionFn){
 /* ============================================================
    1. IndexedDB layer
    ============================================================ */
-const DB_NAME='leo-finance', DB_VER=2;
+const DB_NAME='leo-finance', DB_VER=3;
 const STORES=['accounts','categories','transactions','holdings','loans','loanEntries','fixedAssets','recurring',
-              'creditCards','cardStatements','goals','valuations'];
+              'creditCards','cardStatements','goals','valuations','assetTypes'];
 let _db=null;
 function openDB(){
   return new Promise((res,rej)=>{
@@ -393,7 +393,7 @@ const metaPut   = (k,v) => new Promise((res,rej)=>{ const r=_db.transaction('met
    2. In-memory cache + store helpers
    ============================================================ */
 const cache = { accounts:[], categories:[], transactions:[], holdings:[], loans:[], loanEntries:[], fixedAssets:[], recurring:[],
-                creditCards:[], cardStatements:[], goals:[], valuations:[] };
+                creditCards:[], cardStatements:[], goals:[], valuations:[], assetTypes:[] };
 let settings = { monthStartDay:1, theme:'day', locale:'en-IN' };
 
 async function reloadCache(){
@@ -403,6 +403,7 @@ async function reloadCache(){
   cache.accounts.sort((a,b)=> (a.order||0)-(b.order||0));
   cache.categories.sort((a,b)=> (a.order||0)-(b.order||0));
   cache.creditCards.sort((a,b)=> (a.order||0)-(b.order||0));
+  cache.assetTypes.sort((a,b)=> (a.order||0)-(b.order||0));
 }
 async function saveSettings(patch){ settings = Object.assign(settings, patch); await metaPut('settings', settings); }
 
@@ -411,6 +412,7 @@ const accById  = id => cache.accounts.find(a=>a.id===id);
 const loanById = id => cache.loans.find(l=>l.id===id);
 const cardById = id => cache.creditCards.find(c=>c.id===id);
 const goalById = id => cache.goals.find(g=>g.id===id);
+const holdingType = h => cache.assetTypes.find(t=>t.id===h.assetTypeId) || cache.assetTypes.find(t=>t.name===h.typeName) || cache.assetTypes[0] || {name:h.typeName||'Asset',icon:'📦',quantityUnit:'',fields:[]};
 
 /* nodeName: resolve a from/to id to a display label (account, card, loan, holding, or literal) */
 function nodeName(id){
@@ -541,6 +543,22 @@ const SEED_CATS = [
   ['Transfer','transfer','na',0,0,'🔁','#5a6b8a'],
   ['Miscellaneous / Cash','expense','na',0,0,'❓','#8b938d']
 ];
+const PRESET_ASSET_TYPES = [
+  {name:'Stocks / Shares',   quantityUnit:'shares', icon:'📈', fields:[{key:'ticker',label:'Ticker',kind:'text'},{key:'exchange',label:'Exchange',kind:'text'},{key:'sector',label:'Sector',kind:'text'}]},
+  {name:'Mutual Funds',      quantityUnit:'units',  icon:'📊', fields:[{key:'fund',label:'Fund name',kind:'text'},{key:'folio',label:'Folio no',kind:'text'}]},
+  {name:'Gold',              quantityUnit:'g',      icon:'🪙', fields:[{key:'form',label:'Form (jewellery / coin / bar)',kind:'text'},{key:'purity',label:'Purity (22K / 24K)',kind:'text'}]},
+  {name:'Land / Real estate',quantityUnit:'sqft',  icon:'🌾', fields:[{key:'location',label:'Location',kind:'text'},{key:'survey',label:'Survey / plot no',kind:'text'},{key:'regdate',label:'Registration date',kind:'date'}]},
+  {name:'FD / RD',           quantityUnit:'',       icon:'🏦', fields:[{key:'bank',label:'Bank',kind:'text'},{key:'rate',label:'Interest %',kind:'text'},{key:'maturity',label:'Maturity date',kind:'date'}]},
+  {name:'Crypto',            quantityUnit:'coins',  icon:'₿', fields:[{key:'asset',label:'Asset (BTC / ETH…)',kind:'text'},{key:'wallet',label:'Wallet / exchange',kind:'text'}]},
+  {name:'Other',             quantityUnit:'',       icon:'📦', fields:[]}
+];
+async function seedAssetTypesIfEmpty(){
+  if(cache.assetTypes.length) return;
+  let o=0;
+  for(const t of PRESET_ASSET_TYPES) await idbPut('assetTypes', {id:uid(), builtIn:true, order:o++, ...t});
+  cache.assetTypes = await idbGetAll('assetTypes');
+  cache.assetTypes.sort((a,b)=>(a.order||0)-(b.order||0));
+}
 async function seedIfNeeded(){
   if(await metaGet('seeded')) return;
   let ao=0;
@@ -685,10 +703,11 @@ function renderMoney(){
     <div class="card tight">
       ${cache.holdings.length? cache.holdings.map(h=>{
         const g = (h.currentValue||0)-(h.investedValue||0);
+        const ht = holdingType(h);
         return `<div class="row tappable" data-hold="${h.id}">
-          <div class="ic">${h.icon||'📊'}</div>
+          <div class="ic">${ht.icon||h.icon||'📊'}</div>
           <div class="rmain"><div class="rtitle">${esc(h.label)}</div>
-            <div class="rsub">${esc(h.typeName||'Asset')}${h.quantity?' · '+esc(h.quantity):''}</div></div>
+            <div class="rsub">${esc(ht.name)}${h.quantity?' · '+esc(h.quantity)+(ht.quantityUnit?' '+esc(ht.quantityUnit):''):''}</div></div>
           <div class="ramt tnum">${money(h.currentValue||0)}<small class="${g>=0?'pos':'neg'}">${g>=0?'+':''}${moneyR(g)}</small></div>
         </div>`;
       }).join('') : `<div class="empty">No holdings yet</div>`}
@@ -1075,10 +1094,6 @@ function openAccountSheet(a){
   if(e) $('#dl').onclick = async ()=>{ await idbDel('accounts', a.id); await reloadCache(); closeSheet(); render(); toast('Deleted'); };
 }
 
-const HOLDING_TYPES = [
-  ['Stocks / Shares','shares','📈'],['Mutual Funds','units','📊'],['Gold','g','🪙'],
-  ['Land / Real estate','sqft','🌾'],['FD / RD','','🏦'],['Crypto','coins','₿'],['Other','','📦']
-];
 function sparkline(vals, w=220, ht=40){
   if(vals.length<2) return '';
   const mn=Math.min(...vals), mx=Math.max(...vals), rng=(mx-mn)||1;
@@ -1086,29 +1101,52 @@ function sparkline(vals, w=220, ht=40){
   return `<svg viewBox="0 0 ${w} ${ht}" width="100%" height="${ht}" preserveAspectRatio="none">
     <polyline points="${pts}" fill="none" stroke="var(--accent)" stroke-width="2" vector-effect="non-scaling-stroke"/></svg>`;
 }
+
+let holdingDraft = null;
 function openHoldingSheet(h){
-  const e = !!h; h = h || {id:uid(), label:'', typeName:'Stocks / Shares', quantity:'', investedValue:0, currentValue:0, icon:'📈', buyDate:todayISO(), note:''};
-  const hist = e ? cache.valuations.filter(v=>v.holdingId===h.id).sort((a,b)=>a.date.localeCompare(b.date)) : [];
+  const editing = !!(h && h.id && cache.holdings.some(x=>x.id===h.id));
+  holdingDraft = h ? JSON.parse(JSON.stringify(h)) : {id:uid(), label:'', assetTypeId:(cache.assetTypes[0]||{}).id, quantity:'', investedValue:0, currentValue:0, attributes:{}, buyDate:todayISO(), note:''};
+  if(!holdingDraft.attributes) holdingDraft.attributes = {};
+  if(!holdingDraft.assetTypeId) holdingDraft.assetTypeId = holdingType(holdingDraft).id;
+  drawHoldingSheet(editing);
+}
+function readHoldingForm(){
+  const d = holdingDraft;
+  if($('#hl')) d.label = $('#hl').value.trim();
+  if($('#hq')) d.quantity = $('#hq').value.trim();
+  if($('#hi')) d.investedValue = parseAmount($('#hi').value);
+  if($('#hc')) d._curInput = $('#hc').value;
+  if($('#hn')) d.note = $('#hn').value.trim();
+  $$('[data-attr]').forEach(inp=>{ d.attributes[inp.dataset.attr] = inp.value.trim(); });
+}
+function drawHoldingSheet(editing){
+  const d = holdingDraft;
+  const type = holdingType(d);
+  const hist = editing ? cache.valuations.filter(v=>v.holdingId===d.id).sort((a,b)=>a.date.localeCompare(b.date)) : [];
   const accOpts = cache.accounts.filter(a=>!a.archived).map(a=>`<option value="${a.id}">${esc(a.name)} · ${money(accountBalance(a.id))}</option>`).join('');
+  const curInput = d._curInput!=null ? d._curInput : (d.currentValue? (d.currentValue/100):'');
   openSheet(`
-    <h2>${e?'Edit holding':'Add holding'}</h2>
+    <h2>${editing?'Edit holding':'Add holding'}</h2>
     <label class="fld"><span class="lbl">Type</span><select id="ht">
-      ${HOLDING_TYPES.map(([n])=>`<option ${h.typeName===n?'selected':''}>${n}</option>`).join('')}</select></label>
-    <label class="fld"><span class="lbl">Label</span><input id="hl" value="${esc(h.label)}" placeholder="e.g. HDFC Bank shares"></label>
-    <label class="fld"><span class="lbl">Quantity (optional)</span><input id="hq" value="${esc(h.quantity)}" placeholder="e.g. 50"></label>
-    <label class="fld"><span class="lbl">Invested / cost value (₹)</span><input id="hi" inputmode="decimal" value="${h.investedValue? (h.investedValue/100):''}" placeholder="0"></label>
-    <label class="fld"><span class="lbl">Current value (₹)</span><input id="hc" inputmode="decimal" value="${h.currentValue? (h.currentValue/100):''}" placeholder="0"></label>
-    <label class="fld"><span class="lbl">Note</span><input id="hn" value="${esc(h.note||'')}"></label>
-    <button class="btn primary wide" id="sv">${e?'Save':'Add'}</button>
-    <p class="hintline">Current value feeds Net Worth. Saving a new current value records a dated point below.</p>
-    ${e?`
+      ${cache.assetTypes.map(t=>`<option value="${t.id}" ${d.assetTypeId===t.id?'selected':''}>${t.icon||''} ${esc(t.name)}</option>`).join('')}
+      <option value="__new">＋ New type…</option></select></label>
+    <label class="fld"><span class="lbl">Label</span><input id="hl" value="${esc(d.label)}" placeholder="e.g. HDFC Bank shares"></label>
+    <label class="fld"><span class="lbl">Quantity${type.quantityUnit?' ('+esc(type.quantityUnit)+')':' (optional)'}</span><input id="hq" value="${esc(d.quantity)}" placeholder="e.g. 50"></label>
+    <label class="fld"><span class="lbl">Invested / cost value (₹)</span><input id="hi" inputmode="decimal" value="${d.investedValue? (d.investedValue/100):''}" placeholder="0"></label>
+    <label class="fld"><span class="lbl">Current value (₹)</span><input id="hc" inputmode="decimal" value="${curInput}" placeholder="0"></label>
+    ${(type.fields||[]).map(f=>`<label class="fld"><span class="lbl">${esc(f.label)}</span>
+      <input data-attr="${esc(f.key)}" type="${f.kind==='date'?'date':f.kind==='number'?'number':'text'}" value="${esc(d.attributes[f.key]||'')}"></label>`).join('')}
+    <label class="fld"><span class="lbl">Note</span><input id="hn" value="${esc(d.note||'')}"></label>
+    <button class="btn primary wide" id="sv">${editing?'Save':'Add'}</button>
+    <p class="hintline">Current value feeds Net Worth. Saving a new current value records a dated point.</p>
+    ${editing?`
       ${hist.length>1?`<div class="section-label" style="margin:14px 0 4px">Value history</div>
       <div class="card tight">${sparkline(hist.map(v=>v.value))}
         <div class="bars-x"><span>${fmtDay(hist[0].date)}</span><span>${money(hist[hist.length-1].value)}</span></div></div>`:''}
       <div class="divider"></div>
       <div class="section-label" style="margin:0 0 6px">Buy more / sell</div>
       <div class="btnrow">
-        <input id="bsQty" placeholder="units" style="max-width:80px">
+        <input id="bsQty" placeholder="qty" style="max-width:80px">
         <input id="bsAmt" inputmode="decimal" placeholder="₹ amount" style="flex:1">
         <select id="bsAcc" style="max-width:110px">${accOpts}</select>
       </div>
@@ -1119,21 +1157,31 @@ function openHoldingSheet(h){
       </div>
     `:''}
   `);
+  $('#ht').onchange = ()=>{
+    readHoldingForm();
+    if($('#ht').value==='__new'){
+      openAssetTypeSheet(null, t=>{ holdingDraft.assetTypeId = t.id; drawHoldingSheet(editing); });
+      return;
+    }
+    holdingDraft.assetTypeId = $('#ht').value;
+    holdingDraft.attributes = {}; // fields differ per type
+    drawHoldingSheet(editing);
+  };
+  const h = d;
   const commit = async (writeValuation)=>{
-    h.typeName = $('#ht').value;
-    h.icon = (HOLDING_TYPES.find(t=>t[0]===h.typeName)||[])[2] || '📦';
-    h.label = $('#hl').value.trim() || h.typeName;
-    h.quantity = $('#hq').value.trim();
-    h.investedValue = parseAmount($('#hi').value);
-    const newCur = parseAmount($('#hc').value);
+    readHoldingForm();
+    const t = holdingType(h);
+    h.assetTypeId = t.id; h.typeName = t.name; h.icon = t.icon || '📦';
+    if(!h.label) h.label = t.name;
+    h.investedValue = h.investedValue||0;
+    const newCur = parseAmount(h._curInput||'0'); delete h._curInput;
     const changed = newCur !== (h.currentValue||0);
     h.currentValue = newCur;
-    h.note = $('#hn').value.trim();
     await idbPut('holdings', h);
     if(writeValuation && changed && newCur>0) await idbPut('valuations', {id:uid(), holdingId:h.id, date:todayISO(), value:newCur});
   };
   $('#sv').onclick = async ()=>{ await commit(true); await reloadCache(); closeSheet(); render(); toast('Saved'); };
-  if(e){
+  if(editing){
     $('#buyBtn').onclick = async ()=>{
       const amt=parseAmount($('#bsAmt').value); if(amt<=0) return toast('Enter amount');
       const acc=$('#bsAcc').value;
@@ -1163,6 +1211,81 @@ function openHoldingSheet(h){
       await reloadCache(); closeSheet(); render(); toast('Deleted');
     };
   }
+}
+
+/* ---- asset types (user-editable) ---- */
+let typeDraft = null;
+function openAssetTypeSheet(t, after){
+  const editing = !!(t && t.id);
+  typeDraft = t ? JSON.parse(JSON.stringify(t)) : {id:uid(), name:'', quantityUnit:'', icon:'📦', fields:[], builtIn:false, order:cache.assetTypes.length};
+  if(!typeDraft.fields) typeDraft.fields = [];
+  drawAssetTypeSheet(editing, after);
+}
+function readTypeForm(){
+  const d = typeDraft;
+  if($('#tyName')) d.name = $('#tyName').value.trim();
+  if($('#tyUnit')) d.quantityUnit = $('#tyUnit').value.trim();
+  if($('#tyIcon')) d.icon = $('#tyIcon').value.trim() || '📦';
+  $$('[data-fl]').forEach(inp=>{ const i=+inp.dataset.fl; d.fields[i] = d.fields[i]||{}; d.fields[i].label = inp.value; });
+  $$('[data-fk]').forEach(sel=>{ const i=+sel.dataset.fk; d.fields[i] = d.fields[i]||{}; d.fields[i].kind = sel.value; });
+}
+function drawAssetTypeSheet(editing, after){
+  const d = typeDraft;
+  openSheet(`
+    <h2>${editing?'Edit asset type':'New asset type'}</h2>
+    <div class="btnrow">
+      <label class="fld" style="flex:2"><span class="lbl">Name</span><input id="tyName" value="${esc(d.name)}" placeholder="e.g. PPF"></label>
+      <label class="fld" style="flex:1"><span class="lbl">Icon</span><input id="tyIcon" value="${esc(d.icon)}" maxlength="2"></label>
+    </div>
+    <label class="fld"><span class="lbl">Quantity unit (optional)</span><input id="tyUnit" value="${esc(d.quantityUnit)}" placeholder="e.g. shares, g, sqft"></label>
+    <div class="section-label" style="margin:6px 0">Extra fields</div>
+    <div id="flds">
+      ${d.fields.map((f,i)=>`<div class="btnrow" style="margin-bottom:8px">
+        <input data-fl="${i}" value="${esc(f.label||'')}" placeholder="Field label" style="flex:2">
+        <select data-fk="${i}" style="flex:1">
+          ${['text','number','date'].map(k=>`<option ${f.kind===k?'selected':''}>${k}</option>`).join('')}
+        </select>
+        <button class="btn sm danger" data-flx="${i}">✕</button>
+      </div>`).join('')}
+    </div>
+    <button class="btn sm" id="addFld">＋ Add field</button>
+    <div class="btnrow" style="margin-top:14px">
+      <button class="btn primary wide" id="tySave">${editing?'Save':'Add type'}</button>
+    </div>
+    ${editing && !d.builtIn?`<div class="btnrow" style="margin-top:10px"><button class="btn danger wide" id="tyDel">Delete type</button></div>`:''}
+    ${d.builtIn?`<p class="hintline">Built-in type — you can rename it and change its fields, but not delete it.</p>`:''}
+  `);
+  $('#addFld').onclick = ()=>{ readTypeForm(); typeDraft.fields.push({key:'f'+Date.now().toString(36), label:'', kind:'text'}); drawAssetTypeSheet(editing, after); };
+  $$('[data-flx]').forEach(b=> b.onclick = ()=>{ readTypeForm(); typeDraft.fields.splice(+b.dataset.flx,1); drawAssetTypeSheet(editing, after); });
+  $('#tySave').onclick = async ()=>{
+    readTypeForm();
+    if(!d.name) return toast('Name the type');
+    d.fields = d.fields.filter(f=>f.label && f.label.trim()).map(f=>({key:f.key||('f'+Math.random().toString(36).slice(2,7)), label:f.label.trim(), kind:f.kind||'text'}));
+    await idbPut('assetTypes', d);
+    await reloadCache();
+    closeSheet();
+    if(after) after(d); else openAssetTypeManager();
+    toast('Saved');
+  };
+  if(editing && !d.builtIn) $('#tyDel').onclick = async ()=>{
+    if(cache.holdings.some(h=>h.assetTypeId===d.id)) return toast('In use by a holding');
+    await idbDel('assetTypes', d.id); await reloadCache(); closeSheet(); openAssetTypeManager(); toast('Deleted');
+  };
+}
+function openAssetTypeManager(){
+  openSheet(`
+    <h2>Asset types</h2>
+    <div class="card tight" style="margin:12px 0">
+      ${cache.assetTypes.map(t=>`<div class="row tappable" data-ty="${t.id}">
+        <div class="ic">${t.icon||'📦'}</div>
+        <div class="rmain"><div class="rtitle">${esc(t.name)}${t.builtIn?' <span class="badge">built-in</span>':''}</div>
+          <div class="rsub">${t.quantityUnit?'unit: '+esc(t.quantityUnit)+' · ':''}${(t.fields||[]).length} field${(t.fields||[]).length===1?'':'s'}</div></div>
+      </div>`).join('')}
+      <div class="row"><button class="btn ghost" id="addTy">＋ Add asset type</button></div>
+    </div>
+  `);
+  $('#addTy').onclick = ()=> openAssetTypeSheet(null);
+  $$('[data-ty]').forEach(r=> r.onclick = ()=> openAssetTypeSheet(cache.assetTypes.find(t=>t.id===r.dataset.ty)));
 }
 
 function openFixedSheet(f){
@@ -1510,9 +1633,10 @@ function openSettings(){
     <div class="btnrow">
       <button class="btn sm" id="mgRec">Recurring & routines</button>
       <button class="btn sm" id="mgCats">Categories & budgets</button>
+      <button class="btn sm" id="mgTypes">Asset types</button>
       <button class="btn sm danger" id="wipeBtn">Erase all data</button>
     </div>
-    <p class="hintline">Leo Finance v1 · single user · INR · offline. Not yet built: per-holding valuation history &amp; buy/sell flows.</p>
+    <p class="hintline">Leo Finance · single user · INR · offline. Full spec implemented.</p>
   `);
   $('#thSeg').onclick = e=>{ const b=e.target.closest('button'); if(!b) return;
     $$('#thSeg button').forEach(x=>x.classList.toggle('on',x===b));
@@ -1524,6 +1648,7 @@ function openSettings(){
   $('#impFile').onchange = importJSON;
   $('#mgRec').onclick = openRecurringManager;
   $('#mgCats').onclick = openCategoryManager;
+  $('#mgTypes').onclick = openAssetTypeManager;
   $('#wipeBtn').onclick = wipeAll;
 }
 
@@ -1551,6 +1676,7 @@ async function importJSON(e){
     if(data.settings) await metaPut('settings', data.settings);
     await metaPut('seeded', true);
     await reloadCache();
+    await seedAssetTypesIfEmpty(); await reloadCache();
     applyTheme(settings.theme||'day');
     closeSheet(); render(); toast('Imported');
   }catch(err){ toast('Import failed — bad file'); }
@@ -1560,7 +1686,7 @@ async function wipeAll(){
   if(!confirm('Erase everything on this device? Export first if unsure.')) return;
   for(const s of STORES){ for(const row of cache[s]) await idbDel(s,row.id); }
   await metaPut('seeded', false);
-  await seedIfNeeded(); await reloadCache();
+  await seedIfNeeded(); await reloadCache(); await seedAssetTypesIfEmpty(); await reloadCache();
   closeSheet(); render(); toast('Data erased');
 }
 
@@ -1620,6 +1746,7 @@ $('#btnSettings').addEventListener('click', openSettings);
     await openDB();
     await seedIfNeeded();
     await reloadCache();
+    await seedAssetTypesIfEmpty();
     await processRecurring();
     applyTheme(settings.theme || localStorage.getItem('leofin-theme') || 'day');
     render();

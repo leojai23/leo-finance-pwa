@@ -41,6 +41,7 @@ When `index.html` changes, bump `CACHE_NAME` in `sw.js` so clients pick it up.
 | Transactions — quick-add expense / income / transfer, edit, delete, undo | ✅ |
 | Home — Income / Expenses / Assets / Net-worth tiles, "Due now", routine checklist, recent | ✅ |
 | Money — accounts, holdings (invested vs current, valuation history, buy/sell), fixed assets | ✅ |
+| Asset types — 7 presets + user-defined types with custom fields (Settings → Asset types) | ✅ |
 | Credit cards — spend from card, manual statements (total/min/due), pay-bill flow, in net worth | ✅ |
 | People — loans lent & borrowed, repayments, optional auto-posted transfer | ✅ |
 | Recurring & routines — monthly/weekly, auto-post on boot or "Due now" Confirm/Skip | ✅ |
@@ -51,15 +52,16 @@ When `index.html` changes, bump `CACHE_NAME` in `sw.js` so clients pick it up.
 
 ## Rough edges / not yet done
 
-- Asset types are a fixed preset list (no user-defined types yet)
 - Recurring reminders are in-app only (no notifications — by design for a Pages PWA)
 - No multi-currency, bank CSV import, or cloud sync (deferred per the spec)
 
+The full design spec is now implemented.
+
 ## Data model
 
-Stores in IndexedDB `leo-finance` (v2): `accounts`, `categories`, `transactions`,
-`holdings`, `valuations`, `loans`, `loanEntries`, `fixedAssets`, `recurring`,
-`creditCards`, `cardStatements`, `goals`, plus `meta` (settings, seed flag).
+Stores in IndexedDB `leo-finance` (v3): `accounts`, `categories`, `transactions`,
+`holdings`, `valuations`, `assetTypes`, `loans`, `loanEntries`, `fixedAssets`,
+`recurring`, `creditCards`, `cardStatements`, `goals`, plus `meta` (settings, seed flag).
 Amounts are integer **paise**. Full model in the design spec.
 
 ## Backup
