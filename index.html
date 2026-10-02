@@ -514,35 +514,39 @@ const SEED_ACCOUNTS = [
   {name:'GPay',   type:'wallet', openingBalance:0}
 ];
 const SEED_CATS = [
-  // name, kind, class, routine, fav, icon, color
-  ['Salary','income','na',0,0,'💼','#1f7a54'],
-  ['Freelance / Side','income','na',0,0,'🧾','#2f6b8a'],
-  ['Interest / Dividends','income','na',0,0,'📈','#3f4fa0'],
-  ['Refunds / Cashback','income','na',0,0,'↩️','#5a6b8a'],
-  ['Gifts received','income','na',0,0,'🎁','#9a5a1e'],
-  ['Rent / Housing','expense','need',1,0,'🏠','#8a5a2f'],
-  ['Electricity','expense','need',1,0,'💡','#b07d1f'],
-  ['Water / Gas','expense','need',1,0,'🚰','#2f8a8a'],
-  ['Internet / Mobile','expense','need',1,0,'📶','#3f6fa0'],
-  ['Groceries & Household','expense','need',1,1,'🛒','#5a7a2f'],
-  ['Food & Dining','expense','want',1,1,'🍽️','#b0472e'],
-  ['Transport / Fuel','expense','need',1,1,'⛽','#7a5230'],
-  ['Domestic help','expense','need',1,0,'🧹','#6a5a8a'],
-  ['School / Fees','expense','need',1,0,'📚','#3f4fa0'],
-  ['Health & Medical','expense','need',0,0,'💊','#a3384c'],
-  ['Insurance premium','expense','need',1,0,'🛡️','#45526e'],
-  ['Subscriptions','expense','want',1,0,'📺','#5a3f8f'],
-  ['Shopping','expense','want',0,0,'🛍️','#9a5a1e'],
-  ['Entertainment','expense','want',0,0,'🎬','#7a3f8f'],
-  ['Travel','expense','want',0,0,'✈️','#1c6f8c'],
-  ['Family & Gifts','expense','want',0,0,'🎀','#b04a7a'],
-  ['Bank charges / Tax','expense','na',0,0,'🏦','#5a635e'],
-  ['Loan EMI','expense','debt',1,0,'📆','#a3384c'],
-  ['Credit card payment','transfer','debt',1,0,'💳','#a3384c'],
-  ['SIP / RD / Savings','transfer','saving',1,0,'🐖','#1f7a54'],
-  ['Transfer','transfer','na',0,0,'🔁','#5a6b8a'],
-  ['Miscellaneous / Cash','expense','na',0,0,'❓','#8b938d']
+  // name, kind, class, routine, fav, icon, color, priority
+  ['Salary','income','na',0,0,'💼','#1f7a54',''],
+  ['Freelance / Side','income','na',0,0,'🧾','#2f6b8a',''],
+  ['Interest / Dividends','income','na',0,0,'📈','#3f4fa0',''],
+  ['Refunds / Cashback','income','na',0,0,'↩️','#5a6b8a',''],
+  ['Gifts received','income','na',0,0,'🎁','#9a5a1e',''],
+  ['Rent / Housing','expense','need',1,0,'🏠','#8a5a2f','mandate'],
+  ['Electricity','expense','need',1,0,'💡','#b07d1f','need'],
+  ['Water / Gas','expense','need',1,0,'🚰','#2f8a8a','need'],
+  ['Internet / Mobile','expense','need',1,0,'📶','#3f6fa0','need'],
+  ['Groceries & Household','expense','need',1,1,'🛒','#5a7a2f','need'],
+  ['Food & Dining','expense','want',1,1,'🍽️','#b0472e','want'],
+  ['Transport / Fuel','expense','need',1,1,'⛽','#7a5230','need'],
+  ['Domestic help','expense','need',1,0,'🧹','#6a5a8a','need'],
+  ['School / Fees','expense','need',1,0,'📚','#3f4fa0','need'],
+  ['Health & Medical','expense','need',0,0,'💊','#a3384c','need'],
+  ['Insurance premium','expense','need',1,0,'🛡️','#45526e','mandate'],
+  ['Subscriptions','expense','want',1,0,'📺','#5a3f8f','want'],
+  ['Shopping','expense','want',0,0,'🛍️','#9a5a1e','want'],
+  ['Entertainment','expense','want',0,0,'🎬','#7a3f8f','wish'],
+  ['Travel','expense','want',0,0,'✈️','#1c6f8c','wish'],
+  ['Family & Gifts','expense','want',0,0,'🎀','#b04a7a','wish'],
+  ['Bank charges / Tax','expense','na',0,0,'🏦','#5a635e',''],
+  ['Loan EMI','expense','debt',1,0,'📆','#a3384c','mandate'],
+  ['Credit card payment','transfer','debt',1,0,'💳','#a3384c',''],
+  ['SIP / RD / Savings','transfer','saving',1,0,'🐖','#1f7a54','invest'],
+  ['Transfer','transfer','na',0,0,'🔁','#5a6b8a',''],
+  ['Miscellaneous / Cash','expense','na',0,0,'❓','#8b938d','extra']
 ];
+// name -> default priority, used to backfill categories saved before this field existed
+const PRIORITY_BACKFILL = Object.fromEntries(SEED_CATS.map(([name,,,,,,,pri])=>[name,pri]));
+const PRIORITY_LABEL = {mandate:'Mandate',need:'Need',want:'Want',wish:'Wish',extra:'Extra',invest:'Invest','':'—'};
+const PRIORITY_COLOR = {mandate:'#a3384c',need:'#1f7a54',want:'#b07d1f',wish:'#3f6fa0',extra:'#8b938d',invest:'#5a3f8f'};
 const PRESET_ASSET_TYPES = [
   {name:'Stocks / Shares',   quantityUnit:'shares', icon:'📈', fields:[{key:'ticker',label:'Ticker',kind:'text'},{key:'exchange',label:'Exchange',kind:'text'},{key:'sector',label:'Sector',kind:'text'}]},
   {name:'Mutual Funds',      quantityUnit:'units',  icon:'📊', fields:[{key:'fund',label:'Fund name',kind:'text'},{key:'folio',label:'Folio no',kind:'text'}]},
@@ -564,11 +568,19 @@ async function seedIfNeeded(){
   let ao=0;
   for(const a of SEED_ACCOUNTS) await idbPut('accounts',{id:uid(),archived:false,order:ao++,...a});
   let ord=0;
-  for(const [name,kind,cls,routine,fav,icon,color] of SEED_CATS){
-    await idbPut('categories',{id:uid(),name,kind,class:cls,isRoutine:!!routine,isFavourite:!!fav,icon,color,order:ord++,monthlyBudget:0});
+  for(const [name,kind,cls,routine,fav,icon,color,pri] of SEED_CATS){
+    await idbPut('categories',{id:uid(),name,kind,class:cls,priority:pri||'',isRoutine:!!routine,isFavourite:!!fav,icon,color,order:ord++,monthlyBudget:0});
   }
   await saveSettings({monthStartDay:1, theme: (localStorage.getItem('leofin-theme')||'day')});
   await metaPut('seeded', true);
+}
+async function migratePrioritiesIfNeeded(){
+  if(await metaGet('priorityMigrated')) return;
+  for(const c of cache.categories){
+    if(c.priority===undefined){ c.priority = PRIORITY_BACKFILL[c.name] || ''; await idbPut('categories', c); }
+  }
+  cache.categories = await idbGetAll('categories');
+  await metaPut('priorityMigrated', true);
 }
 
 /* ============================================================
@@ -833,6 +845,11 @@ function renderReports(){
   const clsTotal = Object.values(cls).reduce((a,b)=>a+b,0)||1;
   const clsColor = {need:'var(--pos)',want:'var(--neg)',saving:'var(--neu)',debt:'var(--warn)',na:'var(--border-strong)'};
 
+  // spend priority (Mandate/Need/Want/Wish/Extra)
+  const pri = {mandate:0,need:0,want:0,wish:0,extra:0};
+  exp.forEach(t=>{ const c=catById(t.categoryId); if(c && pri[c.priority]!==undefined) pri[c.priority]+=t.amount; });
+  const priTotal = Object.values(pri).reduce((a,b)=>a+b,0)||1;
+
   // daily bars + calendar heatmap
   const dayMap = {};
   exp.forEach(t=>{ dayMap[t.date]=(dayMap[t.date]||0)+t.amount; });
@@ -889,6 +906,18 @@ function renderReports(){
         <span><i style="background:var(--neu)"></i>Savings ${Math.round(cls.saving/clsTotal*100)}%</span>
         ${cls.debt>0?`<span><i style="background:var(--warn)"></i>Debt ${Math.round(cls.debt/clsTotal*100)}%</span>`:''}
       </div>
+    </div>`:''}
+
+    ${priTotal>1?`<div class="section-label">Spend priority</div>
+    <div class="card">
+      <div class="nws">
+        ${['mandate','need','want','wish','extra'].map(k=> pri[k]>0? `<span style="width:${pri[k]/priTotal*100}%;background:${PRIORITY_COLOR[k]}"></span>`:'').join('')}
+      </div>
+      <div class="nws-key">
+        ${['mandate','need','want','wish','extra'].filter(k=>pri[k]>0).map(k=>
+          `<span><i style="background:${PRIORITY_COLOR[k]}"></i>${PRIORITY_LABEL[k]} ${Math.round(pri[k]/priTotal*100)}%</span>`).join('')}
+      </div>
+      <p class="hintline">Set a category's priority in Settings → Category manager.</p>
     </div>`:''}
 
     ${budgets.length?`<div class="section-label">Budgets</div>
@@ -1702,7 +1731,7 @@ function openCategoryManager(){
       ${rows.map(c=>`<div class="row" style="flex-wrap:wrap">
         <div class="ic" style="background:${c.color}22">${c.icon}</div>
         <div class="rmain tappable" data-editc="${c.id}" style="cursor:pointer"><div class="rtitle">${esc(c.name)}</div>
-          <div class="rsub">${c.kind} · ${c.class}${c.isRoutine?' · routine':''}${c.isFavourite?' · ★':''}</div></div>
+          <div class="rsub">${c.kind} · ${c.class}${c.priority?' · '+PRIORITY_LABEL[c.priority]:''}${c.isRoutine?' · routine':''}${c.isFavourite?' · ★':''}</div></div>
         <button class="btn sm" data-favc="${c.id}">${c.isFavourite?'★':'☆'}</button>
         <button class="btn sm" data-rtc="${c.id}">${c.isRoutine?'R':'r'}</button>
         <button class="btn sm danger" data-delc="${c.id}">✕</button>
@@ -1716,7 +1745,7 @@ function openCategoryManager(){
   `);
   $('#ncAdd').onclick = async ()=>{
     const name = $('#ncName').value.trim(); if(!name) return;
-    await idbPut('categories', {id:uid(), name, kind:$('#ncKind').value, class:'na', isRoutine:false, isFavourite:false, icon:'•', color:'#8b938d', order:99, monthlyBudget:0});
+    await idbPut('categories', {id:uid(), name, kind:$('#ncKind').value, class:'na', priority:'', isRoutine:false, isFavourite:false, icon:'•', color:'#8b938d', order:99, monthlyBudget:0});
     await reloadCache(); openCategoryManager();
   };
   $$('[data-editc]').forEach(el=> el.onclick = ()=> openCategorySheet(catById(el.dataset.editc)));
@@ -1739,6 +1768,8 @@ function openCategorySheet(c){
     </div>
     <label class="fld"><span class="lbl">Class (for the Needs / Wants / Savings split)</span><select id="ceClass">
       ${['need','want','saving','debt','na'].map(k=>`<option ${c.class===k?'selected':''}>${k}</option>`).join('')}</select></label>
+    <label class="fld"><span class="lbl">Priority (Mandate / Need / Want / Wish / Extra)</span><select id="cePriority">
+      ${['','mandate','need','want','wish','extra','invest'].map(k=>`<option value="${k}" ${(c.priority||'')===k?'selected':''}>${PRIORITY_LABEL[k]}</option>`).join('')}</select></label>
     <div class="lbl">Colour</div>
     <div class="chips" id="ceColors" style="margin-bottom:14px">
       ${CAT_COLORS.map(col=>`<button class="chip" data-col="${col}" style="border-color:${col};${c.color===col?`background:${col};color:#fff`:''}"><span style="width:12px;height:12px;border-radius:3px;background:${col};display:inline-block"></span></button>`).join('')}
@@ -1752,6 +1783,7 @@ function openCategorySheet(c){
     c.name = $('#ceName').value.trim() || c.name;
     c.icon = $('#ceIcon').value.trim() || c.icon;
     c.class = $('#ceClass').value;
+    c.priority = $('#cePriority').value;
     c.color = color;
     await idbPut('categories', c); await reloadCache(); closeSheet(); openCategoryManager(); toast('Saved');
   };
@@ -1774,6 +1806,7 @@ $('#btnSettings').addEventListener('click', openSettings);
     await openDB();
     await seedIfNeeded();
     await reloadCache();
+    await migratePrioritiesIfNeeded();
     await seedAssetTypesIfEmpty();
     await processRecurring();
     applyTheme(settings.theme || localStorage.getItem('leofin-theme') || 'day');
