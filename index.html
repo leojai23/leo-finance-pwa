@@ -2386,7 +2386,14 @@ function openSearchSheet(){
       <p>This app needs IndexedDB. If you're in a private window, try a normal one.</p></div>`;
   }
   if('serviceWorker' in navigator){
-    try{ await navigator.serviceWorker.register('sw.js'); }catch(e){}
+    try{
+      await navigator.serviceWorker.register('sw.js');
+      let refreshed = false;
+      navigator.serviceWorker.addEventListener('controllerchange', ()=>{
+        if(refreshed) return; refreshed = true;
+        toast('Update ready', 'Reload', ()=> location.reload());
+      });
+    }catch(e){}
   }
 })();
 </script>
