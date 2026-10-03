@@ -844,7 +844,7 @@ function renderMoney(){
         const g=(f.currentValue||0)-(f.investedValue||0);
         return `<div class="row tappable" data-fixed="${f.id}">
           <div class="ic">${f.kind==='vehicle'?'🚗':f.kind==='property'?'🏘️':'📦'}</div>
-          <div class="rmain"><div class="rtitle">${esc(f.name)}</div><div class="rsub">${esc(f.kind)}</div></div>
+          <div class="rmain"><div class="rtitle">${esc(f.name)}</div><div class="rsub">${esc(f.kind)}${f.note?' · '+esc(f.note):''}</div></div>
           <div class="ramt tnum">${money(f.currentValue||0)}<small class="${g>=0?'pos':'neg'}">${g>=0?'+':''}${moneyR(g)}</small></div>
         </div>`;
       }).join('') : `<div class="empty">No fixed assets</div>`}
@@ -859,7 +859,7 @@ function renderMoney(){
         return `<div class="row tappable" data-card="${c.id}">
           <div class="ic">💳</div>
           <div class="rmain"><div class="rtitle">${esc(c.name)} ${paidPill}</div>
-            <div class="rsub">${st? 'bill '+moneyR(st.totalDue)+' · due '+fmtDay(st.dueDate) : 'no statement yet'}</div></div>
+            <div class="rsub">${st? 'bill '+moneyR(st.totalDue)+' · due '+fmtDay(st.dueDate) : 'no statement yet'}${c.note?' · '+esc(c.note):''}</div></div>
           <div class="ramt tnum ${os>0?'neg':'faint'}">${money(os)}<small>outstanding</small></div>
         </div>`;
       }).join('') : `<div class="empty">No cards yet</div>`}
@@ -875,7 +875,7 @@ function renderMoney(){
         return `<div class="row tappable" data-goal="${g.id}" style="flex-wrap:wrap">
           <div class="ic">🎯</div>
           <div class="rmain"><div class="rtitle">${esc(g.name)}</div>
-            <div class="rsub">${moneyR(g.savedAmount||0)} of ${moneyR(g.targetAmount)}${need!=null? ' · '+moneyR(need)+'/mo needed':''}</div></div>
+            <div class="rsub">${moneyR(g.savedAmount||0)} of ${moneyR(g.targetAmount)}${need!=null? ' · '+moneyR(need)+'/mo needed':''}${g.note?' · '+esc(g.note):''}</div></div>
           <div class="ramt tnum">${pct}%</div>
           <div style="flex-basis:100%;height:6px;background:var(--panel-2);border-radius:4px;margin-top:6px">
             <div style="width:${pct}%;height:100%;background:var(--accent);border-radius:4px"></div></div>
@@ -1668,6 +1668,7 @@ function openFixedSheet(f){
       ${['vehicle','property','other'].map(k=>`<option ${f.kind===k?'selected':''}>${k}</option>`).join('')}</select></label>
     <label class="fld"><span class="lbl">Invested (₹)</span><input id="fi" inputmode="decimal" value="${f.investedValue? (f.investedValue/100):''}"></label>
     <label class="fld"><span class="lbl">Current estimate (₹)</span><input id="fc" inputmode="decimal" value="${f.currentValue? (f.currentValue/100):''}"></label>
+    <label class="fld"><span class="lbl">Note (optional)</span><input id="fn2" value="${esc(f.note||'')}" placeholder="e.g. registration number, location"></label>
     <button class="btn primary wide" id="sv">${e?'Save':'Add'}</button>
     ${e?`<div class="btnrow" style="margin-top:10px"><button class="btn danger wide" id="dl">Delete</button></div>`:''}
     <p class="hintline">Tracked for completeness — excluded from the Net Worth figure.</p>
@@ -1677,6 +1678,7 @@ function openFixedSheet(f){
     f.kind = $('#fk').value;
     f.investedValue = parseAmount($('#fi').value);
     f.currentValue = parseAmount($('#fc').value);
+    f.note = $('#fn2').value.trim();
     await idbPut('fixedAssets', f); await reloadCache(); closeSheet(); render(); toast('Saved');
   };
   if(e) $('#dl').onclick = async ()=>{ await idbDel('fixedAssets', f.id); await reloadCache(); closeSheet(); render(); toast('Deleted'); };
@@ -1768,7 +1770,7 @@ function openLoanSheet(l){
    ============================================================ */
 function openCardSheet(c){
   const e = c && c.id;
-  c = Object.assign({id:uid(), name:'', creditLimit:0, billingCycleDay:1, dueDay:18, archived:false, order:cache.creditCards.length}, c||{});
+  c = Object.assign({id:uid(), name:'', creditLimit:0, billingCycleDay:1, dueDay:18, note:'', archived:false, order:cache.creditCards.length}, c||{});
   const os = e ? cardOutstanding(c.id) : 0;
   const stmts = e ? cache.cardStatements.filter(s=>s.cardId===c.id).sort((a,b)=>(b.statementDate||'').localeCompare(a.statementDate||'')) : [];
   const accOpts = cache.accounts.filter(a=>!a.archived).map(a=>`<option value="${a.id}">${esc(a.name)}</option>`).join('');
@@ -1780,6 +1782,7 @@ function openCardSheet(c){
       <label class="fld" style="flex:1"><span class="lbl">Bill day</span><input id="cb" inputmode="numeric" value="${c.billingCycleDay}"></label>
       <label class="fld" style="flex:1"><span class="lbl">Due day</span><input id="cd" inputmode="numeric" value="${c.dueDay}"></label>
     </div>
+    <label class="fld"><span class="lbl">Note (optional)</span><input id="cn2" value="${esc(c.note||'')}" placeholder="e.g. secondary card for travel"></label>
     <button class="btn primary wide" id="sv">${e?'Save':'Add'}</button>
     ${e?`
       <div class="divider"></div>
@@ -1815,6 +1818,7 @@ function openCardSheet(c){
     c.creditLimit = parseAmount($('#cl').value);
     c.billingCycleDay = Math.min(28, Math.max(1, +$('#cb').value||1));
     c.dueDay = Math.min(28, Math.max(1, +$('#cd').value||18));
+    c.note = $('#cn2').value.trim();
     await idbPut('creditCards', c); await reloadCache();
     if(!e && returnToAddAfterCard!==null){ const ed=returnToAddAfterCard; returnToAddAfterCard=null; closeSheet(); drawAddSheet(ed); toast('Card added'); return; }
     closeSheet(); render(); toast('Saved');
@@ -1869,13 +1873,14 @@ function openCardPay(card, st){
    ============================================================ */
 function openGoalSheet(g){
   const e = g && g.id;
-  g = Object.assign({id:uid(), name:'', targetAmount:0, targetDate:'', savedAmount:0, createdAt:new Date().toISOString()}, g||{});
+  g = Object.assign({id:uid(), name:'', targetAmount:0, targetDate:'', savedAmount:0, note:'', createdAt:new Date().toISOString()}, g||{});
   openSheet(`
     <h2>${e?'Savings goal':'Add savings goal'}</h2>
     <label class="fld"><span class="lbl">Name</span><input id="gn" value="${esc(g.name)}" placeholder="e.g. Emergency fund"></label>
     <label class="fld"><span class="lbl">Target amount (₹)</span><input id="gt" inputmode="decimal" value="${g.targetAmount? (g.targetAmount/100):''}"></label>
     <label class="fld"><span class="lbl">Target date (optional)</span><input type="date" id="gd" value="${g.targetDate||''}"></label>
     <label class="fld"><span class="lbl">Already saved (₹)</span><input id="gs" inputmode="decimal" value="${g.savedAmount? (g.savedAmount/100):''}"></label>
+    <label class="fld"><span class="lbl">Note (optional)</span><input id="gn2" value="${esc(g.note||'')}" placeholder="e.g. Europe trip 2027"></label>
     <button class="btn primary wide" id="sv">${e?'Save':'Add'}</button>
     ${e?`
       <div class="divider"></div>
@@ -1892,6 +1897,7 @@ function openGoalSheet(g){
     g.targetAmount = parseAmount($('#gt').value);
     g.targetDate = $('#gd').value || '';
     g.savedAmount = parseAmount($('#gs').value);
+    g.note = $('#gn2').value.trim();
     await idbPut('goals', g); await reloadCache(); closeSheet(); render(); toast('Saved');
   };
   if(e){
@@ -1916,7 +1922,7 @@ function openRecurringManager(){
         <div class="row tappable" data-rec="${r.id}">
           <div class="ic">${r.autoPost?'⚙️':'🔔'}</div>
           <div class="rmain"><div class="rtitle">${esc(r.name)}</div>
-            <div class="rsub">${moneyR(r.amount)} · ${r.frequency} · next ${fmtDay(r.nextDueDate)} · ${r.autoPost?'auto':'manual'}</div></div>
+            <div class="rsub">${moneyR(r.amount)} · ${r.frequency} · next ${fmtDay(r.nextDueDate)} · ${r.autoPost?'auto':'manual'}${r.note?' · '+esc(r.note):''}</div></div>
         </div>`).join('') : '<div class="empty">Nothing recurring yet</div>'}
       <div class="row"><button class="btn ghost" id="addRec">+ Add recurring item</button></div>
     </div>
@@ -1928,7 +1934,7 @@ function openRecurringSheet(r){
   const e = r && r.id;
   r = Object.assign({id:uid(), name:'', kind:'expense', amount:0, isAmountFixed:true, categoryId:null,
     fromId:(cache.accounts[0]||{}).id||null, toId:null, frequency:'monthly', dayOfMonth:1,
-    nextDueDate:todayISO(), autoPost:false}, r||{});
+    nextDueDate:todayISO(), autoPost:false, note:''}, r||{});
   const accOpts = (sel,withCards)=>{
     let o = `<option value="">—</option>` + cache.accounts.filter(a=>!a.archived).map(a=>`<option value="${a.id}" ${sel===a.id?'selected':''}>${esc(a.name)}</option>`).join('');
     if(withCards) o += cache.creditCards.map(c=>`<option value="${c.id}" ${sel===c.id?'selected':''}>${esc(c.name)} (card)</option>`).join('');
@@ -1952,6 +1958,7 @@ function openRecurringSheet(r){
     </div>
     <label class="fld"><span class="lbl" style="display:flex;justify-content:space-between">Auto-post on due date
       <input type="checkbox" id="rap" ${r.autoPost?'checked':''} style="width:auto"></span></label>
+    <label class="fld"><span class="lbl">Note (optional)</span><input id="rn2" value="${esc(r.note||'')}" placeholder="e.g. policy number, landlord contact"></label>
     <button class="btn primary wide" id="sv">${e?'Save':'Add'}</button>
     ${e?`<div class="btnrow" style="margin-top:10px"><button class="btn danger wide" id="dl">Delete</button></div>`:''}
   `);
@@ -1966,6 +1973,7 @@ function openRecurringSheet(r){
     r.frequency = $('#rfr').value;
     r.nextDueDate = $('#rd').value || todayISO();
     r.autoPost = $('#rap').checked;
+    r.note = $('#rn2').value.trim();
     if(r.amount<=0) return toast('Enter an amount');
     await idbPut('recurring', r);
     await processRecurring();
