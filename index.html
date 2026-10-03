@@ -498,8 +498,12 @@ const sumKind = (txns,kind)=> txns.filter(t=>t.kind===kind).reduce((s,t)=>s+t.am
 function advanceDate(iso, freq){
   const d = new Date(iso+'T00:00:00');
   if(freq==='weekly'){ d.setDate(d.getDate()+7); }
+  else if(freq==='yearly'){ const day=d.getDate(); d.setFullYear(d.getFullYear()+1); if(d.getDate()<day) d.setDate(0); }
   else { const day=d.getDate(); d.setMonth(d.getMonth()+1); if(d.getDate()<day) d.setDate(0); }
   return d.toLocaleDateString('en-CA');
+}
+function recurringActualTotal(recId, year){
+  return cache.transactions.filter(t=>t.recurringId===recId && t.date.slice(0,4)===String(year)).reduce((s,t)=>s+t.amount,0);
 }
 function txFromRecurring(r, dateISO){
   return { id:uid(), amount:r.amount, kind:r.kind, fromId:r.fromId||null, toId:r.toId||null,
@@ -985,6 +989,9 @@ function renderReports(){
   const nwVals = nwHistory.map(s=>s.net);
   const nwMaxAbs = Math.max(1, ...nwVals.map(v=>Math.abs(v)));
 
+  // planned expenses (recurring items) — year over year
+  const planYear = new Date().getFullYear(), planLastYear = planYear-1;
+
   // budgets
   const budgets = cache.categories.filter(c=>c.monthlyBudget>0).map(c=>({c, spent: byCat[c.id]||0}))
                     .sort((a,b)=> (b.spent/b.c.monthlyBudget) - (a.spent/a.c.monthlyBudget));
@@ -1079,6 +1086,22 @@ function renderReports(){
       ` : `<div class="empty">Tracking starts today — check back after a few days to see a trend.</div>`}
     </div>
 
+    ${cache.recurring.length? `<div class="section-label">Planned expenses</div>
+    <div class="card tight">
+      ${cache.recurring.slice().sort((a,b)=>a.name.localeCompare(b.name)).map(r=>{
+        const cur = recurringActualTotal(r.id, planYear), prev = recurringActualTotal(r.id, planLastYear);
+        const delta = prev? Math.round((cur-prev)/prev*100) : null;
+        const pending = r.nextDueDate && r.nextDueDate<=todayISO();
+        return `<div class="row tappable" data-planrec="${r.id}">
+          <div class="ic">${r.frequency==='yearly'?'📅':r.autoPost?'⚙️':'🔔'}</div>
+          <div class="rmain"><div class="rtitle">${esc(r.name)}</div>
+            <div class="rsub">${planYear}: ${moneyR(cur)}${prev?` · ${planLastYear}: ${moneyR(prev)}`:''}${delta!==null?` · ${delta>=0?'▲':'▼'}${Math.abs(delta)}%`:''}</div></div>
+          <div class="ramt tnum ${pending?'neg':'faint'}">${fmtDay(r.nextDueDate)}<small>${pending?'pending':'next'}</small></div>
+        </div>`;
+      }).join('')}
+    </div>
+    <p class="hintline">Tap an item for its full year-by-year and month-by-month history.</p>`:''}
+
     <div class="section-label">By category</div>
     <div class="card tight">
       ${cats.length? cats.map(x=>`<div class="row tappable" data-catdrill="${x.c.id||''}">
@@ -1091,6 +1114,7 @@ function renderReports(){
   $$('[data-catdrill]').forEach(r=> r.onclick = ()=> openCatDrill(r.dataset.catdrill));
   $$('[data-calday]').forEach(r=> r.onclick = ()=> openDayDrill(r.dataset.calday));
   $('#printStmtBtn').onclick = printStatement;
+  $$('[data-planrec]').forEach(r=> r.onclick = ()=> openPlannedDetail(r.dataset.planrec));
 }
 function printStatement(){
   const P = periodTxns();
@@ -1115,6 +1139,35 @@ function printStatement(){
     </div>
   `;
   setTimeout(()=>window.print(), 50);
+}
+function openPlannedDetail(recId){
+  const r = cache.recurring.find(x=>x.id===recId); if(!r) return;
+  const txns = cache.transactions.filter(t=>t.recurringId===recId).sort((a,b)=>a.date.localeCompare(b.date));
+  const byYear = {};
+  txns.forEach(t=>{ const y=t.date.slice(0,4); byYear[y]=(byYear[y]||0)+t.amount; });
+  const years = Object.keys(byYear).sort();
+  const maxY = Math.max(1, ...years.map(y=>byYear[y]));
+  const thisYear = new Date().getFullYear();
+  const byMonth = {};
+  txns.filter(t=>t.date.slice(0,4)===String(thisYear)).forEach(t=>{ const m=+t.date.slice(5,7); byMonth[m]=(byMonth[m]||0)+t.amount; });
+  const maxM = Math.max(1, ...Object.values(byMonth));
+  openSheet(`
+    <h2>${esc(r.name)}</h2>
+    <div class="view-sub">${moneyR(r.amount)} planned · ${r.frequency} · next due ${fmtDay(r.nextDueDate)}</div>
+    ${years.length? `<div class="section-label">Year over year</div>
+    <div class="card">
+      <div class="bars" style="height:70px">${years.map(y=>`<div class="b" style="height:${Math.max(2,Math.round(byYear[y]/maxY*70))}px" title="${y} ${money(byYear[y])}"></div>`).join('')}</div>
+      <div class="bars-x">${years.map(y=>`<span>${y}</span>`).join('')}</div>
+    </div>` : '<div class="empty">No settled payments recorded yet</div>'}
+    ${r.frequency!=='yearly'? `<div class="section-label">${thisYear} by month</div>
+    <div class="card">
+      <div class="bars" style="height:70px">${Array.from({length:12},(_,i)=>i+1).map(m=>`<div class="b" style="height:${byMonth[m]?Math.max(2,Math.round(byMonth[m]/maxM*70)):2}px" title="${m}/${thisYear} ${money(byMonth[m]||0)}"></div>`).join('')}</div>
+      <div class="bars-x">${['J','F','M','A','M','J','J','A','S','O','N','D'].map(l=>`<span>${l}</span>`).join('')}</div>
+    </div>`:''}
+    <div class="section-label">History</div>
+    <div class="card tight">${txns.length? txns.slice().reverse().map(txRow).join('') : '<div class="empty">No settled payments yet</div>'}</div>
+  `);
+  wireTxRows();
 }
 function openDayDrill(iso){
   const list = cache.transactions.filter(t=>t.date===iso).sort((a,b)=>(b.createdAt||'').localeCompare(a.createdAt||''));
@@ -1892,7 +1945,7 @@ function openRecurringSheet(r){
     ${r.kind!=='expense'?`<label class="fld"><span class="lbl">To</span><select id="rt">${accOpts(r.toId,r.kind==='transfer')}</select></label>`:''}
     <div class="btnrow">
       <label class="fld" style="flex:1"><span class="lbl">Frequency</span><select id="rfr">
-        <option ${r.frequency==='monthly'?'selected':''}>monthly</option><option ${r.frequency==='weekly'?'selected':''}>weekly</option></select></label>
+        <option ${r.frequency==='monthly'?'selected':''}>monthly</option><option ${r.frequency==='weekly'?'selected':''}>weekly</option><option ${r.frequency==='yearly'?'selected':''}>yearly</option></select></label>
       <label class="fld" style="flex:1"><span class="lbl">Next due</span><input type="date" id="rd" value="${r.nextDueDate}"></label>
     </div>
     <label class="fld"><span class="lbl" style="display:flex;justify-content:space-between">Auto-post on due date
