@@ -377,9 +377,9 @@ function toast(msg, actionLabel, actionFn){
 /* ============================================================
    1. IndexedDB layer
    ============================================================ */
-const DB_NAME='leo-finance', DB_VER=3;
+const DB_NAME='leo-finance', DB_VER=4;
 const STORES=['accounts','categories','transactions','holdings','loans','loanEntries','fixedAssets','recurring',
-              'creditCards','cardStatements','goals','valuations','assetTypes'];
+              'creditCards','cardStatements','goals','valuations','assetTypes','netWorth'];
 let _db=null;
 function openDB(){
   return new Promise((res,rej)=>{
@@ -404,7 +404,7 @@ const metaPut   = (k,v) => new Promise((res,rej)=>{ const r=_db.transaction('met
    2. In-memory cache + store helpers
    ============================================================ */
 const cache = { accounts:[], categories:[], transactions:[], holdings:[], loans:[], loanEntries:[], fixedAssets:[], recurring:[],
-                creditCards:[], cardStatements:[], goals:[], valuations:[], assetTypes:[] };
+                creditCards:[], cardStatements:[], goals:[], valuations:[], assetTypes:[], netWorth:[] };
 let settings = { monthStartDay:1, theme:'day', locale:'en-IN' };
 
 async function reloadCache(){
@@ -478,6 +478,13 @@ function netWorthParts(){
   const people = totalOwed();
   const liab = cards + people;
   return { cash, hold, lent, assets, cards, people, liab, net: assets - liab };
+}
+async function snapshotNetWorthIfNeeded(){
+  const today = todayISO();
+  if(cache.netWorth.some(s=>s.id===today)) return;
+  const nw = netWorthParts();
+  await idbPut('netWorth', {id:today, date:today, net:nw.net, assets:nw.assets, liab:nw.liab});
+  cache.netWorth = await idbGetAll('netWorth');
 }
 
 /* ---- period sums ---- */
@@ -565,6 +572,7 @@ const PRESET_ASSET_TYPES = [
   {name:'Land / Real estate',quantityUnit:'sqft',  icon:'🌾', fields:[{key:'location',label:'Location',kind:'text'},{key:'survey',label:'Survey / plot no',kind:'text'},{key:'regdate',label:'Registration date',kind:'date'}]},
   {name:'FD / RD',           quantityUnit:'',       icon:'🏦', fields:[{key:'bank',label:'Bank',kind:'text'},{key:'rate',label:'Interest %',kind:'text'},{key:'maturity',label:'Maturity date',kind:'date'}]},
   {name:'Crypto',            quantityUnit:'coins',  icon:'₿', fields:[{key:'asset',label:'Asset (BTC / ETH…)',kind:'text'},{key:'wallet',label:'Wallet / exchange',kind:'text'}]},
+  {name:'Chit fund',         quantityUnit:'',       icon:'🪔', fields:[{key:'group',label:'Chit group / company',kind:'text'},{key:'duration',label:'Duration (months)',kind:'text'},{key:'monthly',label:'Monthly contribution ₹',kind:'text'}]},
   {name:'Other',             quantityUnit:'',       icon:'📦', fields:[]}
 ];
 async function seedAssetTypesIfEmpty(){
@@ -573,6 +581,16 @@ async function seedAssetTypesIfEmpty(){
   for(const t of PRESET_ASSET_TYPES) await idbPut('assetTypes', {id:uid(), builtIn:true, order:o++, ...t});
   cache.assetTypes = await idbGetAll('assetTypes');
   cache.assetTypes.sort((a,b)=>(a.order||0)-(b.order||0));
+}
+async function migrateChitAssetTypeIfNeeded(){
+  if(await metaGet('chitTypeMigrated')) return;
+  if(!cache.assetTypes.some(t=>t.name==='Chit fund')){
+    const chit = PRESET_ASSET_TYPES.find(t=>t.name==='Chit fund');
+    await idbPut('assetTypes', {id:uid(), builtIn:true, order:cache.assetTypes.length, ...chit});
+    cache.assetTypes = await idbGetAll('assetTypes');
+    cache.assetTypes.sort((a,b)=>(a.order||0)-(b.order||0));
+  }
+  await metaPut('chitTypeMigrated', true);
 }
 async function seedIfNeeded(){
   if(await metaGet('seeded')) return;
@@ -769,6 +787,8 @@ function txRow(t){
   if(t.kind==='transfer') sub = `${esc(nodeName(t.fromId)||'?')} → ${esc(nodeName(t.toId)||'?')}`;
   else sub = esc(nodeName(t.kind==='income'?t.toId:t.fromId) || c.name);
   if(t.note) sub += ' · ' + esc(t.note);
+  const userTags = (t.tags||[]).filter(tg=>tg!=='imported');
+  if(userTags.length) sub += ' · ' + userTags.map(tg=>'#'+esc(tg)).join(' ');
   if(t.receipt) sub = '📎 ' + sub;
   return `<div class="row tappable" data-tx="${t.id}">
     <div class="ic" style="background:${c.color}22">${c.icon}</div>
@@ -957,6 +977,11 @@ function renderReports(){
   }
   const monthsMax = Math.max(1, ...months.map(m=>m[1]));
 
+  // net worth trend (one point/day since this feature shipped)
+  const nwHistory = [...cache.netWorth].sort((a,b)=>a.date.localeCompare(b.date)).slice(-90);
+  const nwVals = nwHistory.map(s=>s.net);
+  const nwMaxAbs = Math.max(1, ...nwVals.map(v=>Math.abs(v)));
+
   // budgets
   const budgets = cache.categories.filter(c=>c.monthlyBudget>0).map(c=>({c, spent: byCat[c.id]||0}))
                     .sort((a,b)=> (b.spent/b.c.monthlyBudget) - (a.spent/a.c.monthlyBudget));
@@ -1041,6 +1066,15 @@ function renderReports(){
       <div class="bars" style="height:80px">${months.map(([lbl,v,cur])=>`<div class="b ${cur?'today':''}" style="height:${Math.max(2,Math.round(v/monthsMax*80))}px" title="${lbl} ${money(v)}"></div>`).join('')}</div>
       <div class="bars-x">${months.map(([lbl])=>`<span>${lbl}</span>`).join('')}</div>
     </div>`:''}
+
+    <div class="section-label">Net worth trend</div>
+    <div class="card">
+      ${nwHistory.length>1 ? `
+        <div class="bars" style="height:80px">${nwHistory.map(s=>`<div class="b" style="height:${Math.max(2,Math.round(Math.abs(s.net)/nwMaxAbs*80))}px;background:${s.net<0?'var(--neg)':'var(--accent-soft)'}" title="${fmtDay(s.date)} ${money(s.net)}"></div>`).join('')}</div>
+        <div class="bars-x"><span>${fmtDay(nwHistory[0].date)}</span><span>${fmtDay(nwHistory[nwHistory.length-1].date)}</span></div>
+        <p class="hintline">Now ${moneyR(nwHistory[nwHistory.length-1].net)}${nwHistory.length>1? ' · started tracking '+moneyR(nwHistory[0].net):''}</p>
+      ` : `<div class="empty">Tracking starts today — check back after a few days to see a trend.</div>`}
+    </div>
 
     <div class="section-label">By category</div>
     <div class="card tight">
@@ -1163,6 +1197,10 @@ function drawAddSheet(editing){
     <label class="fld"><span class="lbl">Note (optional)</span>
       <input id="note" value="${esc(d.note)}" placeholder="what / why"></label>
 
+    <label class="fld"><span class="lbl">Tags (optional, comma separated)</span>
+      <input id="tags" value="${esc((d.tags||[]).filter(t=>t!=='imported').join(', '))}" placeholder="e.g. goa trip, diwali" list="tagList"></label>
+    <datalist id="tagList">${allTags().map(t=>`<option value="${esc(t)}">`).join('')}</datalist>
+
     <div class="fld"><span class="lbl">Receipt (optional)</span>
       <div style="display:flex;align-items:center;gap:8px">
         ${d.receipt ? `<img src="${d.receipt}" style="width:48px;height:48px;object-fit:cover;border-radius:8px;border:1px solid var(--border)">
@@ -1248,7 +1286,13 @@ function syncDraftFromInputs(){
   if($('#toId')) addDraft.toId = $('#toId').value;
   if($('#date')) addDraft.date = $('#date').value || todayISO();
   if($('#note')) addDraft.note = $('#note').value.trim();
+  if($('#tags')){
+    const typed = $('#tags').value.split(',').map(s=>s.trim()).filter(Boolean);
+    const keepImported = (addDraft.tags||[]).includes('imported') ? ['imported'] : [];
+    addDraft.tags = [...new Set([...keepImported, ...typed])];
+  }
 }
+function allTags(){ return [...new Set(cache.transactions.flatMap(t=>(t.tags||[]).filter(tg=>tg!=='imported')))].sort(); }
 async function saveTx(){
   syncDraftFromInputs();
   const d = addDraft;
@@ -2282,9 +2326,13 @@ function openSearchSheet(){
       <label class="fld" style="flex:1"><span class="lbl">Min ₹</span><input id="sqMin" inputmode="decimal"></label>
       <label class="fld" style="flex:1"><span class="lbl">Max ₹</span><input id="sqMax" inputmode="decimal"></label>
     </div>
-    <label class="fld"><span class="lbl">Type</span><select id="sqKind">
-      <option value="">All</option><option value="expense">Expense</option><option value="income">Income</option><option value="transfer">Transfer</option>
-    </select></label>
+    <div class="btnrow">
+      <label class="fld" style="flex:1"><span class="lbl">Type</span><select id="sqKind">
+        <option value="">All</option><option value="expense">Expense</option><option value="income">Income</option><option value="transfer">Transfer</option>
+      </select></label>
+      <label class="fld" style="flex:1"><span class="lbl">Tag</span><input id="sqTag" placeholder="e.g. goa" list="tagList"></label>
+    </div>
+    <datalist id="tagList">${allTags().map(t=>`<option value="${esc(t)}">`).join('')}</datalist>
     <div class="section-label" id="sqCount">Type to search</div>
     <div class="card tight" id="sqResults" style="max-height:48vh;overflow:auto"></div>
   `);
@@ -2293,12 +2341,14 @@ function openSearchSheet(){
     const from = $('#sqFrom').value, to = $('#sqTo').value;
     const min = parseAmount($('#sqMin').value), max = parseAmount($('#sqMax').value);
     const kind = $('#sqKind').value;
+    const tagQ = $('#sqTag').value.trim().toLowerCase();
     let results = cache.transactions.filter(t=>{
       if(kind && t.kind!==kind) return false;
       if(from && t.date<from) return false;
       if(to && t.date>to) return false;
       if(min>0 && t.amount<min) return false;
       if(max>0 && t.amount>max) return false;
+      if(tagQ && !(t.tags||[]).some(tg=>tg.toLowerCase().includes(tagQ))) return false;
       if(text){
         const c = catById(t.categoryId);
         const hay = ((t.note||'')+' '+(c?c.name:'')).toLowerCase();
@@ -2312,7 +2362,7 @@ function openSearchSheet(){
     $('#sqResults').innerHTML = results.slice(0,200).map(txRow).join('') || '<div class="empty">No matches</div>';
     wireTxRows();
   };
-  ['sqText','sqFrom','sqTo','sqMin','sqMax'].forEach(id=> $('#'+id).oninput = run);
+  ['sqText','sqFrom','sqTo','sqMin','sqMax','sqTag'].forEach(id=> $('#'+id).oninput = run);
   $('#sqKind').onchange = run;
   run();
 }
@@ -2324,6 +2374,8 @@ function openSearchSheet(){
     await reloadCache();
     await migratePrioritiesIfNeeded();
     await seedAssetTypesIfEmpty();
+    await migrateChitAssetTypeIfNeeded();
+    await snapshotNetWorthIfNeeded();
     lastExportAt = await metaGet('lastExport');
     checkDueNotifications();
     await processRecurring();
