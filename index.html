@@ -617,9 +617,29 @@ function renderHome(){
   const routineDone = routineCats.filter(c=>paidRoutine.has(c.id)).length;
 
   const pending = pendingRecurring();
+  const dueSoon = dueSoonStatements();
   const recent = cache.transactions.slice(0,8);
+  const daysExp = daysSinceExport();
+  const showBackupNudge = daysExp===null || daysExp>=14;
 
   view.innerHTML = `
+    ${showBackupNudge? `<div class="card" id="backupNudge" style="display:flex;align-items:center;gap:10px;justify-content:space-between">
+      <div><b>📦 Back up your data</b><div class="rsub">${daysExp===null?'Never exported yet':'Last exported '+daysExp+' days ago'} — data lives only on this device.</div></div>
+      <button class="btn sm" id="backupNudgeBtn">Export now</button>
+    </div>`:''}
+
+    ${dueSoon.length? `<div class="section-label">Bills due · ${dueSoon.length}</div>
+    <div class="card tight" id="dueSoonCard">
+      ${dueSoon.map(s=>{ const card=cardById(s.cardId); const left=daysUntil(s.dueDate); const bal=s.totalDue-(s.amountPaid||0);
+        const when = left<0?`Overdue ${Math.abs(left)}d`: left===0?'Due today':`Due in ${left}d`;
+        return `<div class="row">
+          <div class="ic">💳</div>
+          <div class="rmain"><div class="rtitle">${esc(card?card.name:'Card')}</div><div class="rsub">${when} · min ${moneyR(s.minDue)}</div></div>
+          <div class="ramt neg tnum">${money(bal)}<small><button class="btn sm" data-paystmt="${s.id}">Pay</button></small></div>
+        </div>`;
+      }).join('')}
+    </div>`:''}
+
     <div class="tiles">
       <div class="tile"><div class="t-label">Income · ${esc(periodRangeText())}</div><div class="t-val pos tnum">${moneyR(inc)}</div></div>
       <div class="tile"><div class="t-label">Expenses · this period</div><div class="t-val neg tnum">${moneyR(exp)}</div>
@@ -675,7 +695,32 @@ function renderHome(){
     r.nextDueDate = advanceDate(r.nextDueDate, r.frequency); await idbPut('recurring', r);
     await reloadCache(); render(); toast('Skipped '+r.name);
   });
+  if($('#backupNudgeBtn')) $('#backupNudgeBtn').onclick = exportJSON;
+  $$('#dueSoonCard [data-paystmt]').forEach(b=> b.onclick = ()=>{
+    const s = cache.cardStatements.find(x=>x.id===b.dataset.paystmt); if(!s) return;
+    openCardPay(cardById(s.cardId), s);
+  });
   wireTxRows();
+}
+function daysUntil(iso){ return Math.ceil((new Date(iso+'T00:00:00') - new Date(todayISO()+'T00:00:00'))/864e5); }
+function dueSoonStatements(){
+  return cache.cardStatements.filter(s=> s.status!=='paid' && s.dueDate && daysUntil(s.dueDate)<=3)
+    .sort((a,b)=> a.dueDate.localeCompare(b.dueDate));
+}
+function checkDueNotifications(){
+  if(!settings.notifyDue || typeof Notification==='undefined' || Notification.permission!=='granted') return;
+  const today = todayISO();
+  for(const s of dueSoonStatements()){
+    const key = 'leofin-notified-'+s.id+'-'+today;
+    if(localStorage.getItem(key)) continue;
+    const card = cardById(s.cardId);
+    const left = daysUntil(s.dueDate);
+    const when = left<0?`overdue by ${Math.abs(left)}d`: left===0?'due today':`due in ${left}d`;
+    try{
+      new Notification('Card bill ' + when, { body: `${card?card.name:'Card'} · ${money(s.totalDue-(s.amountPaid||0))} remaining` });
+      localStorage.setItem(key, '1');
+    }catch(e){}
+  }
 }
 
 function txRow(t){
@@ -1688,7 +1733,18 @@ function openSettings(){
       <button class="btn" id="impBtn">⬆ Import JSON</button>
     </div>
     <input type="file" id="impFile" accept="application/json" hidden>
-    <p class="hintline">Export regularly — data lives only on this device. Import replaces everything.</p>
+    <p class="hintline">Export regularly — data lives only on this device. Import replaces everything.
+      ${daysSinceExport()!==null?`Last export: ${daysSinceExport()===0?'today':daysSinceExport()+' days ago'}.`:'Never exported yet.'}</p>
+    <div class="btnrow">
+      <button class="btn sm" id="csvBtn">🏦 Import bank statement (CSV)</button>
+    </div>
+    <input type="file" id="csvFile" accept=".csv,text/csv" hidden>
+    <p class="hintline">Bulk-add transactions from a bank CSV export — you map the columns yourself, nothing is auto-detected from your bank.</p>
+    <div class="divider"></div>
+    <div class="section-label" style="margin:0 0 8px">Reminders</div>
+    <label class="fld"><span class="lbl" style="display:flex;justify-content:space-between">Browser alerts for card bills due soon
+      <input type="checkbox" id="notifyDue" ${settings.notifyDue?'checked':''} style="width:auto"></span></label>
+    <p class="hintline">Only fires while the app is open on this device — this is a browser notification, not a push alert that wakes your phone.</p>
     <div class="divider"></div>
     <div class="section-label" style="margin:0 0 8px">Manage</div>
     <div class="btnrow">
@@ -1707,6 +1763,16 @@ function openSettings(){
   $('#expBtn').onclick = exportJSON;
   $('#impBtn').onclick = ()=> $('#impFile').click();
   $('#impFile').onchange = importJSON;
+  $('#csvBtn').onclick = ()=> $('#csvFile').click();
+  $('#csvFile').onchange = onCsvFileChosen;
+  $('#notifyDue').onchange = async e=>{
+    if(e.target.checked){
+      if(typeof Notification==='undefined'){ toast('Notifications not supported in this browser'); e.target.checked=false; return; }
+      const perm = await Notification.requestPermission();
+      if(perm!=='granted'){ toast('Permission denied'); e.target.checked=false; return; }
+    }
+    await saveSettings({notifyDue:e.target.checked}); toast('Saved');
+  };
   $('#mgRec').onclick = openRecurringManager;
   $('#mgCats').onclick = openCategoryManager;
   $('#mgTypes').onclick = openAssetTypeManager;
@@ -1722,7 +1788,14 @@ async function exportJSON(){
   a.href = url; a.download = `leo-finance-${todayISO()}.json`;
   document.body.appendChild(a); a.click(); a.remove();
   setTimeout(()=>URL.revokeObjectURL(url), 1000);
-  toast('Exported');
+  lastExportAt = new Date().toISOString();
+  await metaPut('lastExport', lastExportAt);
+  toast('Exported'); render();
+}
+let lastExportAt = null;
+function daysSinceExport(){
+  if(!lastExportAt) return null;
+  return Math.floor((Date.now() - new Date(lastExportAt).getTime())/864e5);
 }
 async function importJSON(e){
   const file = e.target.files[0]; if(!file) return;
@@ -1742,6 +1815,127 @@ async function importJSON(e){
     closeSheet(); render(); toast('Imported');
   }catch(err){ toast('Import failed — bad file'); }
   finally{ e.target.value=''; }
+}
+/* ============================================================
+   7b. CSV bank-statement import
+   ============================================================ */
+let csvImportState = null;
+function parseCSV(text){
+  const rows = []; let row = []; let field = ''; let inQ = false;
+  for(let i=0;i<text.length;i++){
+    const ch = text[i];
+    if(inQ){
+      if(ch === '"'){ if(text[i+1]==='"'){ field+='"'; i++; } else inQ=false; }
+      else field += ch;
+    } else {
+      if(ch === '"') inQ = true;
+      else if(ch === ','){ row.push(field); field=''; }
+      else if(ch === '\n'){ row.push(field); rows.push(row); row=[]; field=''; }
+      else if(ch === '\r'){ /* skip, \n follows */ }
+      else field += ch;
+    }
+  }
+  if(field.length || row.length){ row.push(field); rows.push(row); }
+  return rows.filter(r=> r.some(c=>c.trim()!==''));
+}
+function guessCsvMap(headers){
+  const find = (...keys) => headers.findIndex(h => keys.some(k => h.toLowerCase().includes(k)));
+  return { date: find('date'), desc: find('narration','description','particulars','details','remark'),
+    debit: find('debit','withdrawal'), credit: find('credit','deposit') };
+}
+function parseCsvDate(s, fmt){
+  s = (s||'').trim(); if(!s) return null;
+  const m1 = s.match(/^(\d{1,4})[-\/](\d{1,2})[-\/](\d{1,4})/); if(!m1) return null;
+  let y,m,d;
+  if(fmt==='ymd'){ y=m1[1]; m=m1[2]; d=m1[3]; }
+  else if(fmt==='mdy'){ m=m1[1]; d=m1[2]; y=m1[3]; }
+  else { d=m1[1]; m=m1[2]; y=m1[3]; }
+  if(y.length!==4) return null;
+  const iso = `${y}-${m.padStart(2,'0')}-${d.padStart(2,'0')}`;
+  const dt = new Date(iso+'T00:00:00'); if(isNaN(dt.getTime())) return null;
+  return iso;
+}
+async function onCsvFileChosen(e){
+  const file = e.target.files[0]; if(!file) return;
+  const text = await file.text();
+  const rows = parseCSV(text);
+  e.target.value = '';
+  if(rows.length<2) return toast('Could not read any rows from that file');
+  const headers = rows[0];
+  csvImportState = { headers, dataRows: rows.slice(1), map: guessCsvMap(headers) };
+  openCsvMapSheet();
+}
+function openCsvMapSheet(){
+  const { headers, dataRows, map } = csvImportState;
+  const opt = sel => headers.map((h,i)=>`<option value="${i}" ${sel===i?'selected':''}>${esc(h)}</option>`).join('');
+  const expCats = cache.categories.filter(c=>c.kind==='expense');
+  const incCats = cache.categories.filter(c=>c.kind==='income');
+  const defExp = expCats.find(c=>c.name==='Miscellaneous / Cash') || expCats[0];
+  const defInc = incCats.find(c=>c.name==='Refunds / Cashback') || incCats[0];
+  openSheet(`
+    <h2>Import bank CSV</h2>
+    <p class="hintline">${dataRows.length} rows found. Map the columns from your statement — defaults are guessed from the header names.</p>
+    <div class="btnrow">
+      <label class="fld" style="flex:1"><span class="lbl">Date column</span><select id="mapDate">${opt(map.date)}</select></label>
+      <label class="fld" style="flex:1"><span class="lbl">Date format</span><select id="mapFmt">
+        <option value="dmy">DD/MM/YYYY</option><option value="ymd">YYYY-MM-DD</option><option value="mdy">MM/DD/YYYY</option>
+      </select></label>
+    </div>
+    <label class="fld"><span class="lbl">Description column</span><select id="mapDesc">${opt(map.desc)}</select></label>
+    <div class="btnrow">
+      <label class="fld" style="flex:1"><span class="lbl">Debit / money out</span><select id="mapDebit">${opt(map.debit)}</select></label>
+      <label class="fld" style="flex:1"><span class="lbl">Credit / money in</span><select id="mapCredit">${opt(map.credit)}</select></label>
+    </div>
+    <label class="fld"><span class="lbl">Import into account</span><select id="mapAcc">${cache.accounts.filter(a=>!a.archived).map(a=>`<option value="${a.id}">${esc(a.name)}</option>`).join('')}</select></label>
+    <div class="btnrow">
+      <label class="fld" style="flex:1"><span class="lbl">Default expense category</span><select id="mapExpCat">${expCats.map(c=>`<option value="${c.id}" ${defExp&&defExp.id===c.id?'selected':''}>${esc(c.name)}</option>`).join('')}</select></label>
+      <label class="fld" style="flex:1"><span class="lbl">Default income category</span><select id="mapIncCat">${incCats.map(c=>`<option value="${c.id}" ${defInc&&defInc.id===c.id?'selected':''}>${esc(c.name)}</option>`).join('')}</select></label>
+    </div>
+    <button class="btn wide" id="csvPreviewBtn">Preview</button>
+    <div id="csvPreviewArea"></div>
+  `);
+  $('#csvPreviewBtn').onclick = renderCsvPreview;
+}
+function buildCsvRows(){
+  const { dataRows } = csvImportState;
+  const iDate = +$('#mapDate').value, fmt = $('#mapFmt').value, iDesc = +$('#mapDesc').value;
+  const iDebit = $('#mapDebit').value===''? -1 : +$('#mapDebit').value;
+  const iCredit = $('#mapCredit').value===''? -1 : +$('#mapCredit').value;
+  const accId = $('#mapAcc').value, expCatId = $('#mapExpCat').value, incCatId = $('#mapIncCat').value;
+  const valid = []; let skipped = 0;
+  for(const r of dataRows){
+    const iso = parseCsvDate(r[iDate], fmt);
+    const desc = (r[iDesc]||'').trim();
+    const debit = iDebit>=0 ? parseAmount(r[iDebit]) : 0;
+    const credit = iCredit>=0 ? parseAmount(r[iCredit]) : 0;
+    if(!iso || (debit<=0 && credit<=0) || (debit>0 && credit>0)){ skipped++; continue; }
+    if(debit>0) valid.push({kind:'expense', amount:debit, date:iso, note:desc.slice(0,140), fromId:accId, toId:null, categoryId:expCatId});
+    else valid.push({kind:'income', amount:credit, date:iso, note:desc.slice(0,140), toId:accId, fromId:null, categoryId:incCatId});
+  }
+  return { valid, skipped };
+}
+function renderCsvPreview(){
+  const { valid, skipped } = buildCsvRows();
+  csvImportState.built = valid;
+  $('#csvPreviewArea').innerHTML = `
+    <div class="divider"></div>
+    <p class="hintline">${valid.length} rows ready to import${skipped?`, ${skipped} skipped (bad date or amount)`:''}.</p>
+    <div class="card tight" style="max-height:30vh;overflow:auto">
+      ${valid.slice(0,5).map(v=>`<div class="row"><div class="rmain"><div class="rtitle">${esc(v.note||'(no description)')}</div>
+        <div class="rsub">${v.date} · ${v.kind}</div></div><div class="ramt ${v.kind==='income'?'pos':'neg'} tnum">${money(v.amount)}</div></div>`).join('')}
+      ${valid.length>5?`<div class="empty">+ ${valid.length-5} more</div>`:''}
+      ${!valid.length?`<div class="empty">No valid rows — check your column mapping</div>`:''}
+    </div>
+    <button class="btn primary wide" id="csvConfirmBtn" ${valid.length?'':'disabled'}>Import ${valid.length} transactions</button>
+  `;
+  $('#csvConfirmBtn').onclick = confirmCsvImport;
+}
+async function confirmCsvImport(){
+  const rows = csvImportState.built || [];
+  for(const v of rows) await idbPut('transactions', { id:uid(), ...v, tags:['imported'], createdAt:new Date().toISOString() });
+  await reloadCache(); closeSheet(); currentTab='home'; render();
+  toast(`Imported ${rows.length} transactions`);
+  csvImportState = null;
 }
 async function wipeAll(){
   if(!confirm('Erase everything on this device? Export first if unsure.')) return;
@@ -1841,6 +2035,8 @@ $('#btnSettings').addEventListener('click', openSettings);
     await reloadCache();
     await migratePrioritiesIfNeeded();
     await seedAssetTypesIfEmpty();
+    lastExportAt = await metaGet('lastExport');
+    checkDueNotifications();
     await processRecurring();
     applyTheme(settings.theme || localStorage.getItem('leofin-theme') || 'day');
     render();
