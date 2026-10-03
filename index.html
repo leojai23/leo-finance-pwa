@@ -297,6 +297,12 @@ textarea{min-height:52px; resize:vertical;}
 .toast.show{opacity:1; transform:translateX(-50%) translateY(0);}
 .toast button{background:none; border:0; color:var(--accent); font-weight:700;}
 @media (prefers-reduced-motion:reduce){*{transition:none !important;}}
+#printArea{display:none;}
+@media print{
+  body *{visibility:hidden;}
+  #printArea, #printArea *{visibility:visible;}
+  #printArea{display:block; position:absolute; left:0; top:0; width:100%; color:#000; background:#fff;}
+}
 </style>
 </head>
 <body>
@@ -318,6 +324,7 @@ textarea{min-height:52px; resize:vertical;}
 
 <div class="scrim" id="scrim"><div class="sheet" id="sheet"></div></div>
 <div class="toast" id="toast"></div>
+<div id="printArea"></div>
 
 <script>
 /* ============================================================
@@ -731,6 +738,7 @@ function txRow(t){
   if(t.kind==='transfer') sub = `${esc(nodeName(t.fromId)||'?')} → ${esc(nodeName(t.toId)||'?')}`;
   else sub = esc(nodeName(t.kind==='income'?t.toId:t.fromId) || c.name);
   if(t.note) sub += ' · ' + esc(t.note);
+  if(t.receipt) sub = '📎 ' + sub;
   return `<div class="row tappable" data-tx="${t.id}">
     <div class="ic" style="background:${c.color}22">${c.icon}</div>
     <div class="rmain"><div class="rtitle">${esc(c.name)}</div><div class="rsub">${sub}</div></div>
@@ -923,7 +931,9 @@ function renderReports(){
                     .sort((a,b)=> (b.spent/b.c.monthlyBudget) - (a.spent/a.c.monthlyBudget));
 
   view.innerHTML = `
-    <div class="view-title">Reports</div>
+    <div class="view-title" style="display:flex;align-items:center;justify-content:space-between">Reports
+      <button class="btn sm" id="printStmtBtn">🖨 Print statement</button>
+    </div>
     <div class="view-sub">${esc(periodRangeText())}</div>
 
     <div class="tiles">
@@ -1012,6 +1022,30 @@ function renderReports(){
   `;
   $$('[data-catdrill]').forEach(r=> r.onclick = ()=> openCatDrill(r.dataset.catdrill));
   $$('[data-calday]').forEach(r=> r.onclick = ()=> openDayDrill(r.dataset.calday));
+  $('#printStmtBtn').onclick = printStatement;
+}
+function printStatement(){
+  const P = periodTxns();
+  const inc = sumKind(P,'income'), exp = sumKind(P,'expense');
+  const rows = [...P].sort((a,b)=> a.date.localeCompare(b.date));
+  $('#printArea').innerHTML = `
+    <h1 style="margin:0 0 4px;font-size:1.3rem">Leo Finance — Statement</h1>
+    <div style="margin-bottom:14px;color:#444">${esc(periodRangeText())}</div>
+    <table style="width:100%;border-collapse:collapse;font-size:12px">
+      <thead><tr style="border-bottom:2px solid #000;text-align:left">
+        <th style="padding:4px">Date</th><th style="padding:4px">Category</th><th style="padding:4px">Note</th><th style="padding:4px;text-align:right">Amount</th>
+      </tr></thead>
+      <tbody>
+        ${rows.map(t=>{ const c=catById(t.categoryId); const sign=t.kind==='income'?'+':t.kind==='expense'?'-':'';
+          return `<tr style="border-bottom:1px solid #ccc"><td style="padding:4px">${fmtDay(t.date)}</td><td style="padding:4px">${esc(c?c.name:'—')}</td><td style="padding:4px">${esc(t.note||'')}</td><td style="padding:4px;text-align:right">${sign}${money(t.amount)}</td></tr>`;
+        }).join('') || '<tr><td colspan="4" style="padding:8px">No transactions this period</td></tr>'}
+      </tbody>
+    </table>
+    <div style="margin-top:16px;font-weight:bold">
+      Income: ${moneyR(inc)} &nbsp;&nbsp; Expenses: ${moneyR(exp)} &nbsp;&nbsp; Net: ${money(inc-exp)}
+    </div>
+  `;
+  setTimeout(()=>window.print(), 50);
 }
 function openDayDrill(iso){
   const list = cache.transactions.filter(t=>t.date===iso).sort((a,b)=>(b.createdAt||'').localeCompare(a.createdAt||''));
@@ -1098,6 +1132,14 @@ function drawAddSheet(editing){
     <label class="fld"><span class="lbl">Note (optional)</span>
       <input id="note" value="${esc(d.note)}" placeholder="what / why"></label>
 
+    <div class="fld"><span class="lbl">Receipt (optional)</span>
+      <div style="display:flex;align-items:center;gap:8px">
+        ${d.receipt ? `<img src="${d.receipt}" style="width:48px;height:48px;object-fit:cover;border-radius:8px;border:1px solid var(--border)">
+          <button class="btn sm" id="rcptClear" type="button">Remove</button>` : `<button class="btn sm" id="rcptPick" type="button">📎 Add photo</button>`}
+      </div>
+      <input type="file" id="rcptFile" accept="image/*" capture="environment" hidden>
+    </div>
+
     <div class="btnrow" style="margin-top:6px">
       <button class="btn primary wide" id="saveTx">${editing?'Save changes':'Add'}</button>
     </div>
@@ -1118,8 +1160,32 @@ function drawAddSheet(editing){
   };
   if($('#favChips')) $('#favChips').onclick = e=>{ const b=e.target.closest('button'); if(b) pick(b.dataset.c); };
   if($('#addCardLink')) $('#addCardLink').onclick = ()=>{ syncDraftFromInputs(); returnToAddAfterCard = editing; openCardSheet(); };
+  if($('#rcptPick')) $('#rcptPick').onclick = ()=> $('#rcptFile').click();
+  if($('#rcptClear')) $('#rcptClear').onclick = ()=>{ syncDraftFromInputs(); addDraft.receipt=null; drawAddSheet(editing); };
+  if($('#rcptFile')) $('#rcptFile').onchange = async e=>{
+    const file = e.target.files[0]; if(!file) return;
+    syncDraftFromInputs();
+    try{ addDraft.receipt = await downscaleImage(file); }catch(err){ toast('Could not read that image'); }
+    drawAddSheet(editing);
+  };
   $('#saveTx').onclick = saveTx;
   if($('#delTx')) $('#delTx').onclick = ()=> delTx(editing);
+}
+function downscaleImage(file, maxDim=1000, quality=0.7){
+  return new Promise((resolve,reject)=>{
+    const img = new Image();
+    const url = URL.createObjectURL(file);
+    img.onload = ()=>{
+      let w=img.width, h=img.height;
+      if(w>maxDim || h>maxDim){ const r=Math.min(maxDim/w, maxDim/h); w=Math.round(w*r); h=Math.round(h*r); }
+      const canvas = document.createElement('canvas'); canvas.width=w; canvas.height=h;
+      canvas.getContext('2d').drawImage(img,0,0,w,h);
+      URL.revokeObjectURL(url);
+      resolve(canvas.toDataURL('image/jpeg', quality));
+    };
+    img.onerror = ()=>{ URL.revokeObjectURL(url); reject(new Error('Could not read image')); };
+    img.src = url;
+  });
 }
 let returnToAddAfterCard = null;
 function openQuickCategorySheet(kind, onSaved){
@@ -1750,6 +1816,33 @@ function openSettings(){
       <input type="checkbox" id="notifyDue" ${settings.notifyDue?'checked':''} style="width:auto"></span></label>
     <p class="hintline">Only fires while the app is open on this device — this is a browser notification, not a push alert that wakes your phone.</p>
     <div class="divider"></div>
+    <div class="section-label" style="margin:0 0 8px">Google Drive backup <span class="faint" style="font-weight:400">(manual, between your devices)</span></div>
+    ${!settings.gdriveClientId ? `
+      <p class="hintline">One-time setup: create a free Google OAuth Client ID so this device can talk to your own Drive.</p>
+      <details style="margin:4px 0 10px">
+        <summary class="hintline" style="cursor:pointer">How do I get a Client ID?</summary>
+        <ol style="font-size:.74rem; color:var(--text-soft); padding-left:18px; line-height:1.6; margin:6px 0">
+          <li>Go to <b>console.cloud.google.com</b>, create or pick a project.</li>
+          <li><b>APIs &amp; Services → Library</b> → enable "Google Drive API".</li>
+          <li><b>APIs &amp; Services → OAuth consent screen</b> → External → add your own email as a test user.</li>
+          <li><b>APIs &amp; Services → Credentials → Create Credentials → OAuth client ID</b> → type "Web application".</li>
+          <li>Under "Authorized JavaScript origins" add: <code>https://leojai23.github.io</code></li>
+          <li>Copy the Client ID and paste it below.</li>
+        </ol>
+      </details>
+      <div class="btnrow">
+        <input id="gdClientId" placeholder="Paste your Client ID here" style="flex:1">
+        <button class="btn sm" id="gdSaveId">Save</button>
+      </div>
+    ` : `
+      <div class="btnrow">
+        <button class="btn sm" id="gdConnect">${gdriveToken?'Reconnect':'Connect Google account'}</button>
+        <button class="btn sm" id="gdBackup">⬆ Backup to Drive</button>
+        <button class="btn sm" id="gdRestore">⬇ Restore from Drive</button>
+      </div>
+      <p class="hintline">${settings.gdriveLastBackup ? 'Last Drive backup: '+fmtDay(settings.gdriveLastBackup.slice(0,10)) : 'Never backed up to Drive yet.'} · <a href="javascript:void(0)" id="gdForget">remove Client ID</a></p>
+    `}
+    <div class="divider"></div>
     <div class="section-label" style="margin:0 0 8px">Manage</div>
     <div class="btnrow">
       <button class="btn sm" id="mgRec">Recurring & routines</button>
@@ -1777,6 +1870,17 @@ function openSettings(){
       if(perm!=='granted'){ toast('Permission denied'); e.target.checked=false; return; }
     }
     await saveSettings({notifyDue:e.target.checked}); toast('Saved');
+  };
+  if($('#gdSaveId')) $('#gdSaveId').onclick = async ()=>{
+    const v = $('#gdClientId').value.trim(); if(!v) return;
+    await saveSettings({gdriveClientId:v}); openSettings();
+  };
+  if($('#gdConnect')) $('#gdConnect').onclick = gdriveConnect;
+  if($('#gdBackup')) $('#gdBackup').onclick = gdriveBackup;
+  if($('#gdRestore')) $('#gdRestore').onclick = gdriveRestore;
+  if($('#gdForget')) $('#gdForget').onclick = async ()=>{
+    if(!confirm('Remove the saved Client ID? You can paste it again any time.')) return;
+    gdriveToken = null; await saveSettings({gdriveClientId:'', gdriveFileId:''}); openSettings();
   };
   $('#mgRec').onclick = openRecurringManager;
   $('#mgCats').onclick = openCategoryManager;
@@ -1958,6 +2062,89 @@ async function confirmCsvImport(){
   await reloadCache(); closeSheet(); currentTab='home'; render();
   toast(`Imported ${rows.length} transactions`);
   csvImportState = null;
+}
+/* ============================================================
+   7c. Google Drive manual backup/restore
+   ============================================================ */
+let gisClient = null, gdriveToken = null;
+const DRIVE_FILENAME = 'leo-finance-backup.json';
+function loadGis(){
+  return new Promise((resolve,reject)=>{
+    if(window.google && google.accounts && google.accounts.oauth2) return resolve();
+    const s = document.createElement('script');
+    s.src = 'https://accounts.google.com/gsi/client';
+    s.onload = ()=> resolve();
+    s.onerror = ()=> reject(new Error('Could not reach Google — check your internet connection'));
+    document.head.appendChild(s);
+  });
+}
+async function gdriveConnect(){
+  if(!settings.gdriveClientId) return false;
+  try{ await loadGis(); }catch(err){ toast(err.message); return false; }
+  return new Promise(resolve=>{
+    gisClient = google.accounts.oauth2.initTokenClient({
+      client_id: settings.gdriveClientId,
+      scope: 'https://www.googleapis.com/auth/drive.file',
+      callback: resp=>{
+        if(resp.error){ toast('Google sign-in failed'); resolve(false); return; }
+        gdriveToken = resp.access_token;
+        toast('Connected to Google Drive');
+        resolve(true);
+      }
+    });
+    gisClient.requestAccessToken();
+  });
+}
+async function gdriveFindOrCreateFile(){
+  if(settings.gdriveFileId) return settings.gdriveFileId;
+  const q = encodeURIComponent(`name='${DRIVE_FILENAME}' and trashed=false`);
+  const res = await fetch(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name)`, { headers:{ Authorization:'Bearer '+gdriveToken } });
+  const data = await res.json();
+  if(data.files && data.files.length){ await saveSettings({gdriveFileId:data.files[0].id}); return data.files[0].id; }
+  const boundary = 'leofinboundary';
+  const meta = { name: DRIVE_FILENAME, mimeType:'application/json' };
+  const body = `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(meta)}\r\n--${boundary}\r\nContent-Type: application/json\r\n\r\n{}\r\n--${boundary}--`;
+  const createRes = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id', {
+    method:'POST', headers:{ Authorization:'Bearer '+gdriveToken, 'Content-Type':`multipart/related; boundary=${boundary}` }, body
+  });
+  const created = await createRes.json();
+  await saveSettings({gdriveFileId: created.id});
+  return created.id;
+}
+async function gdriveBackup(){
+  if(!gdriveToken){ const ok = await gdriveConnect(); if(!ok) return; }
+  try{
+    const fileId = await gdriveFindOrCreateFile();
+    const dump = { app:'leo-finance', version:1, exportedAt:new Date().toISOString(), settings };
+    for(const s of STORES) dump[s] = cache[s];
+    const res = await fetch(`https://www.googleapis.com/upload/drive/v3/files/${fileId}?uploadType=media`, {
+      method:'PATCH', headers:{ Authorization:'Bearer '+gdriveToken, 'Content-Type':'application/json' },
+      body: JSON.stringify(dump)
+    });
+    if(!res.ok) throw new Error('upload failed');
+    lastExportAt = new Date().toISOString(); await metaPut('lastExport', lastExportAt);
+    await saveSettings({gdriveLastBackup:lastExportAt});
+    render(); toast('Backed up to Drive');
+  }catch(err){ toast('Drive backup failed'); }
+}
+async function gdriveRestore(){
+  if(!gdriveToken){ const ok = await gdriveConnect(); if(!ok) return; }
+  try{
+    const fileId = await gdriveFindOrCreateFile();
+    const res = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`, { headers:{ Authorization:'Bearer '+gdriveToken } });
+    if(!res.ok) throw new Error('download failed');
+    const data = await res.json();
+    if(data.app!=='leo-finance') return toast('Drive file is not a Leo Finance backup');
+    if(!confirm('Replace ALL current data on this device with the Drive backup?')) return;
+    for(const s of [...STORES]){
+      for(const row of cache[s]) await idbDel(s, row.id);
+      for(const row of (data[s]||[])) await idbPut(s, row);
+    }
+    if(data.settings) await metaPut('settings', Object.assign({}, data.settings, {gdriveClientId:settings.gdriveClientId, gdriveFileId:settings.gdriveFileId}));
+    await metaPut('seeded', true);
+    await reloadCache(); await seedAssetTypesIfEmpty(); await reloadCache();
+    applyTheme(settings.theme||'day'); closeSheet(); render(); toast('Restored from Drive');
+  }catch(err){ toast('Drive restore failed'); }
 }
 async function wipeAll(){
   if(!confirm('Erase everything on this device? Export first if unsure.')) return;
