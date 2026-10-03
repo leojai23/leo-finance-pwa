@@ -2637,6 +2637,13 @@ function unlockApp(){
   $('.app').style.display = '';
   $('#tabbar').style.display = '';
   $('#lockPinInput').value = '';
+  runPendingShortcutAction();
+}
+let pendingShortcutAction = new URLSearchParams(location.search).get('action');
+if(pendingShortcutAction) history.replaceState(null, '', location.pathname + location.hash);
+function runPendingShortcutAction(){
+  if(pendingShortcutAction==='add-expense'){ openAddSheet({kind:'expense'}); }
+  pendingShortcutAction = null;
 }
 function openPinSetupSheet(){
   openSheet(`
@@ -2721,7 +2728,7 @@ async function disableBiometricUnlock(){
     await processRecurring();
     applyTheme(settings.theme || localStorage.getItem('leofin-theme') || 'day');
     render();
-    if(settings.lockEnabled) showLockScreen();
+    if(settings.lockEnabled) showLockScreen(); else runPendingShortcutAction();
   }catch(err){
     view.innerHTML = `<div class="card"><h3>Could not start</h3><p class="view-sub">${esc(err.message||err)}</p>
       <p>This app needs IndexedDB. If you're in a private window, try a normal one.</p></div>`;
