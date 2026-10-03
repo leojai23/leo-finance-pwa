@@ -201,6 +201,9 @@ main{padding:16px;}
   opacity:0; pointer-events:none; transition:opacity .18s ease;
 }
 .scrim.open{opacity:1; pointer-events:auto;}
+#lockScreen{position:fixed; inset:0; z-index:999; background:var(--bg); flex-direction:column; align-items:center; justify-content:center; padding:24px; gap:14px;}
+#lockScreen input{font-size:1.4rem; text-align:center; letter-spacing:.4em; padding:10px; border-radius:10px; border:1px solid var(--border); width:180px; background:var(--panel); color:var(--text);}
+#lockScreen .btn{width:180px;}
 .sheet{
   background:var(--panel); width:100%; max-width:520px;
   border-radius:18px 18px 0 0; padding:18px 16px calc(env(safe-area-inset-bottom) + 20px);
@@ -328,6 +331,14 @@ textarea{min-height:52px; resize:vertical;}
 <div class="scrim" id="scrim"><div class="sheet" id="sheet"></div></div>
 <div class="toast" id="toast"></div>
 <div id="printArea"></div>
+<div id="lockScreen" style="display:none">
+  <div style="font-size:2rem">🔒</div>
+  <div style="font-weight:700;font-size:1.1rem">Leo Finance locked</div>
+  <input id="lockPinInput" type="password" inputmode="numeric" maxlength="6" placeholder="PIN">
+  <button class="btn primary" id="lockUnlockBtn">Unlock</button>
+  <button class="btn" id="lockBioBtn" style="display:none">Use biometric</button>
+  <div class="hintline" id="lockMsg"></div>
+</div>
 
 <script>
 /* ============================================================
@@ -1274,7 +1285,12 @@ function drawAddSheet(editing){
     <label class="fld" style="margin-top:14px"><span class="lbl">Date</span>
       <input type="date" id="date" value="${d.date}" max="${todayISO()}"></label>
     <label class="fld"><span class="lbl">Note (optional)</span>
-      <input id="note" value="${esc(d.note)}" placeholder="what / why"></label>
+      <div style="display:flex;gap:6px;align-items:center">
+        <input id="note" value="${esc(d.note)}" placeholder="what / why" style="flex:1">
+        <button class="btn sm" id="noteMic" type="button" title="Dictate note">🎤</button>
+      </div>
+      <div class="hintline" id="noteMicMsg" style="display:none"></div>
+    </label>
 
     <label class="fld"><span class="lbl">Tags (optional, comma separated)</span>
       <input id="tags" value="${esc((d.tags||[]).filter(t=>t!=='imported').join(', '))}" placeholder="e.g. goa trip, diwali" list="tagList"></label>
@@ -1346,8 +1362,39 @@ function drawAddSheet(editing){
     try{ addDraft.receipt = await downscaleImage(file); }catch(err){ toast('Could not read that image'); }
     drawAddSheet(editing);
   };
+  if($('#noteMic')) wireNoteMic();
   $('#saveTx').onclick = saveTx;
   if($('#delTx')) $('#delTx').onclick = ()=> delTx(editing);
+}
+function wireNoteMic(){
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  const btn = $('#noteMic'), msg = $('#noteMicMsg'), inp = $('#note');
+  if(!SR){ btn.style.display='none'; return; }
+  let rec = null, listening = false;
+  btn.onclick = ()=>{
+    if(listening){ rec && rec.stop(); return; }
+    rec = new SR();
+    rec.lang = 'en-IN'; rec.interimResults = true; rec.continuous = false;
+    rec.addEventListener('start', ()=>{ listening=true; btn.textContent='⏺'; msg.style.display='block'; msg.textContent='Listening…'; });
+    rec.addEventListener('result', e=>{
+      let t=''; for(let i=e.resultIndex;i<e.results.length;i++) t+=e.results[i][0].transcript;
+      inp.value = t;
+    });
+    rec.addEventListener('error', e=>{
+      if(e.error==='aborted') return;
+      const reasons = {
+        'not-allowed':'Microphone permission blocked.', 'service-not-allowed':'Microphone permission blocked.',
+        'no-speech':'Didn’t catch that — try again.', 'audio-capture':'No microphone found on this device.',
+        'network':'Needs an internet connection.', 'language-not-supported':'Not available in this language on your browser.'
+      };
+      msg.textContent = reasons[e.error] || ('Voice unavailable (' + (e.error||'unknown error') + ').');
+    });
+    rec.addEventListener('end', ()=>{
+      listening=false; btn.textContent='🎤';
+      setTimeout(()=>{ if(msg) msg.style.display='none'; }, 1500);
+    });
+    try{ rec.start(); }catch(e){}
+  };
 }
 function downscaleImage(file, maxDim=1000, quality=0.7){
   return new Promise((resolve,reject)=>{
@@ -2054,6 +2101,23 @@ function openSettings(){
       <p class="hintline">${settings.gdriveLastBackup ? 'Last Drive backup: '+fmtDay(settings.gdriveLastBackup.slice(0,10)) : 'Never backed up to Drive yet.'} · <a href="javascript:void(0)" id="gdForget">remove Client ID</a></p>
     `}
     <div class="divider"></div>
+    <div class="section-label" style="margin:0 0 8px">App lock</div>
+    ${!settings.lockEnabled ? `
+      <div class="btnrow"><button class="btn sm" id="lockSetup">🔒 Enable app lock</button></div>
+      <p class="hintline">Require a PIN to open the app on this device.</p>
+    ` : `
+      <div class="btnrow">
+        <button class="btn sm" id="lockChange">Change PIN</button>
+        <button class="btn sm danger" id="lockDisable">Disable app lock</button>
+      </div>
+      ${settings.lockCredId ? `
+        <p class="hintline">Biometric unlock is on. <a href="javascript:void(0)" id="bioOff">Turn off</a></p>
+      ` : `
+        <div class="btnrow"><button class="btn sm" id="bioOn">+ Add biometric unlock</button></div>
+        <p class="hintline">Uses your device's fingerprint/face unlock, where available, instead of typing the PIN.</p>
+      `}
+    `}
+    <div class="divider"></div>
     <div class="section-label" style="margin:0 0 8px">Manage</div>
     <div class="btnrow">
       <button class="btn sm" id="mgRec">Recurring & routines</button>
@@ -2094,6 +2158,11 @@ function openSettings(){
     if(!confirm('Remove the saved Client ID? You can paste it again any time.')) return;
     gdriveToken = null; await saveSettings({gdriveClientId:'', gdriveFileId:''}); openSettings();
   };
+  if($('#lockSetup')) $('#lockSetup').onclick = openPinSetupSheet;
+  if($('#lockChange')) $('#lockChange').onclick = openPinChangeSheet;
+  if($('#lockDisable')) $('#lockDisable').onclick = openPinDisableSheet;
+  if($('#bioOn')) $('#bioOn').onclick = enableBiometricUnlock;
+  if($('#bioOff')) $('#bioOff').onclick = disableBiometricUnlock;
   $('#mgRec').onclick = openRecurringManager;
   $('#mgCats').onclick = openCategoryManager;
   $('#mgTypes').onclick = openAssetTypeManager;
@@ -2525,6 +2594,119 @@ function openSearchSheet(){
   run();
 }
 
+/* ============================================================
+   9. App lock (PIN + optional biometric)
+   ============================================================ */
+async function sha256Hex(str){
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str));
+  return [...new Uint8Array(buf)].map(b=>b.toString(16).padStart(2,'0')).join('');
+}
+function showLockScreen(){
+  $('#lockScreen').style.display = 'flex';
+  $('.app').style.display = 'none';
+  $('#tabbar').style.display = 'none';
+  $('#lockPinInput').value = ''; $('#lockMsg').textContent = '';
+  $('#lockUnlockBtn').onclick = tryPinUnlock;
+  $('#lockPinInput').onkeydown = e=>{ if(e.key==='Enter') tryPinUnlock(); };
+  if(settings.lockCredId && window.PublicKeyCredential){
+    $('#lockBioBtn').style.display = 'block';
+    $('#lockBioBtn').onclick = tryBiometricUnlock;
+    tryBiometricUnlock();
+  } else {
+    $('#lockBioBtn').style.display = 'none';
+    setTimeout(()=> $('#lockPinInput').focus(), 100);
+  }
+}
+async function tryPinUnlock(){
+  const hash = await sha256Hex($('#lockPinInput').value.trim());
+  if(hash === settings.lockPinHash) unlockApp();
+  else { $('#lockMsg').textContent = 'Wrong PIN'; $('#lockPinInput').value=''; }
+}
+async function tryBiometricUnlock(){
+  try{
+    const credIdBytes = Uint8Array.from(atob(settings.lockCredId), c=>c.charCodeAt(0));
+    const challenge = crypto.getRandomValues(new Uint8Array(32));
+    const assertion = await navigator.credentials.get({ publicKey: {
+      challenge, allowCredentials:[{id:credIdBytes, type:'public-key'}], userVerification:'required', timeout:60000
+    }});
+    if(assertion) unlockApp();
+  }catch(err){ /* cancelled or failed — stay locked, PIN still works */ }
+}
+function unlockApp(){
+  $('#lockScreen').style.display = 'none';
+  $('.app').style.display = '';
+  $('#tabbar').style.display = '';
+  $('#lockPinInput').value = '';
+}
+function openPinSetupSheet(){
+  openSheet(`
+    <h2>Set a PIN</h2>
+    <p class="hintline">4–6 digits. You'll need this to open the app each time.</p>
+    <label class="fld"><span class="lbl">New PIN</span><input id="pinNew" type="password" inputmode="numeric" maxlength="6" placeholder="••••"></label>
+    <label class="fld"><span class="lbl">Confirm PIN</span><input id="pinConfirm" type="password" inputmode="numeric" maxlength="6" placeholder="••••"></label>
+    <button class="btn primary wide" id="pinSave">Save PIN</button>
+  `);
+  $('#pinSave').onclick = async ()=>{
+    const p1 = $('#pinNew').value.trim(), p2 = $('#pinConfirm').value.trim();
+    if(p1.length<4 || p1.length>6 || !/^\d+$/.test(p1)) return toast('PIN must be 4–6 digits');
+    if(p1!==p2) return toast('PINs do not match');
+    await saveSettings({lockEnabled:true, lockPinHash: await sha256Hex(p1)});
+    closeSheet(); openSettings(); toast('App lock enabled');
+  };
+}
+function openPinChangeSheet(){
+  openSheet(`
+    <h2>Change PIN</h2>
+    <label class="fld"><span class="lbl">Current PIN</span><input id="pinCur" type="password" inputmode="numeric" maxlength="6"></label>
+    <label class="fld"><span class="lbl">New PIN</span><input id="pinNew" type="password" inputmode="numeric" maxlength="6"></label>
+    <label class="fld"><span class="lbl">Confirm new PIN</span><input id="pinConfirm" type="password" inputmode="numeric" maxlength="6"></label>
+    <button class="btn primary wide" id="pinSave">Save</button>
+  `);
+  $('#pinSave').onclick = async ()=>{
+    const curHash = await sha256Hex($('#pinCur').value.trim());
+    if(curHash !== settings.lockPinHash) return toast('Current PIN is wrong');
+    const p1 = $('#pinNew').value.trim(), p2 = $('#pinConfirm').value.trim();
+    if(p1.length<4 || p1.length>6 || !/^\d+$/.test(p1)) return toast('PIN must be 4–6 digits');
+    if(p1!==p2) return toast('PINs do not match');
+    await saveSettings({lockPinHash: await sha256Hex(p1)});
+    closeSheet(); openSettings(); toast('PIN changed');
+  };
+}
+function openPinDisableSheet(){
+  openSheet(`
+    <h2>Disable app lock</h2>
+    <label class="fld"><span class="lbl">Enter current PIN</span><input id="pinCheck" type="password" inputmode="numeric" maxlength="6"></label>
+    <button class="btn danger wide" id="pinOff">Disable</button>
+  `);
+  $('#pinOff').onclick = async ()=>{
+    const hash = await sha256Hex($('#pinCheck').value.trim());
+    if(hash !== settings.lockPinHash) return toast('Wrong PIN');
+    await saveSettings({lockEnabled:false, lockPinHash:'', lockCredId:''});
+    closeSheet(); openSettings(); toast('App lock disabled');
+  };
+}
+async function enableBiometricUnlock(){
+  try{
+    const available = window.PublicKeyCredential && await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable();
+    if(!available) return toast('Biometric unlock not available on this device');
+    const challenge = crypto.getRandomValues(new Uint8Array(32));
+    const cred = await navigator.credentials.create({ publicKey: {
+      challenge, rp:{name:'Leo Finance'},
+      user:{ id: crypto.getRandomValues(new Uint8Array(16)), name:'leo-finance-user', displayName:'Leo Finance' },
+      pubKeyCredParams:[{type:'public-key', alg:-7}],
+      authenticatorSelection:{ authenticatorAttachment:'platform', userVerification:'required' },
+      timeout:60000
+    }});
+    if(!cred) return toast('Could not set up biometric unlock');
+    const rawId = btoa(String.fromCharCode(...new Uint8Array(cred.rawId)));
+    await saveSettings({lockCredId: rawId});
+    toast('Biometric unlock enabled'); openSettings();
+  }catch(err){ toast('Could not set up biometric unlock'); }
+}
+async function disableBiometricUnlock(){
+  await saveSettings({lockCredId:''}); openSettings(); toast('Biometric unlock removed');
+}
+
 (async function boot(){
   try{
     await openDB();
@@ -2539,6 +2721,7 @@ function openSearchSheet(){
     await processRecurring();
     applyTheme(settings.theme || localStorage.getItem('leofin-theme') || 'day');
     render();
+    if(settings.lockEnabled) showLockScreen();
   }catch(err){
     view.innerHTML = `<div class="card"><h3>Could not start</h3><p class="view-sub">${esc(err.message||err)}</p>
       <p>This app needs IndexedDB. If you're in a private window, try a normal one.</p></div>`;
