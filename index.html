@@ -641,7 +641,7 @@ function renderHome(){
 
   // routine checklist (bills only — never income)
   const routineCats = cache.categories.filter(c=>c.isRoutine && c.kind!=='income');
-  const paidRoutine = new Set(P.filter(t=>t.kind!=='income').map(t=>t.categoryId));
+  const paidRoutine = new Set(P.filter(t=>t.kind!=='income').flatMap(t=>splitsOf(t).map(s=>s.categoryId)));
   const routineDone = routineCats.filter(c=>paidRoutine.has(c.id)).length;
 
   const pending = pendingRecurring();
@@ -711,7 +711,7 @@ function renderHome(){
     <div class="card tight" id="routineCard">
       ${routineCats.length? routineCats.map(c=>{
         const done = paidRoutine.has(c.id);
-        const spent = P.filter(t=>t.categoryId===c.id && t.kind!=='income').reduce((s,t)=>s+t.amount,0);
+        const spent = P.filter(t=>t.kind!=='income').reduce((s,t)=> s + splitsOf(t).filter(x=>x.categoryId===c.id).reduce((a,x)=>a+x.amount,0), 0);
         return `<div class="row tappable" data-cat="${c.id}">
           <div class="ic" style="background:${c.color}22">${c.icon}</div>
           <div class="rmain"><div class="rtitle">${esc(c.name)}</div>
@@ -779,12 +779,15 @@ function checkDueNotifications(){
   }
 }
 
+function splitsOf(t){ return (t.splits && t.splits.length) ? t.splits : [{categoryId:t.categoryId, amount:t.amount}]; }
 function txRow(t){
-  const c = catById(t.categoryId) || {icon:'•',name:'—',color:'#8b938d'};
+  const isSplit = t.splits && t.splits.length>1;
+  const c = isSplit ? {icon:'✂️',name:'Split',color:'#8b938d'} : (catById(t.categoryId) || {icon:'•',name:'—',color:'#8b938d'});
   const sign = t.kind==='income' ? '+' : t.kind==='expense' ? '−' : '';
   const cls  = t.kind==='income' ? 'pos' : t.kind==='expense' ? 'neg' : 'neu';
   let sub;
-  if(t.kind==='transfer') sub = `${esc(nodeName(t.fromId)||'?')} → ${esc(nodeName(t.toId)||'?')}`;
+  if(isSplit) sub = t.splits.map(s=>{ const sc=catById(s.categoryId); return esc(sc?sc.name:'—')+' '+money(s.amount); }).join(' + ');
+  else if(t.kind==='transfer') sub = `${esc(nodeName(t.fromId)||'?')} → ${esc(nodeName(t.toId)||'?')}`;
   else sub = esc(nodeName(t.kind==='income'?t.toId:t.fromId) || c.name);
   if(t.note) sub += ' · ' + esc(t.note);
   const userTags = (t.tags||[]).filter(tg=>tg!=='imported');
@@ -938,7 +941,7 @@ function renderReports(){
 
   // by category
   const byCat = {}, byCatN = {};
-  exp.forEach(t=>{ byCat[t.categoryId]=(byCat[t.categoryId]||0)+t.amount; byCatN[t.categoryId]=(byCatN[t.categoryId]||0)+1; });
+  exp.forEach(t=> splitsOf(t).forEach(s=>{ byCat[s.categoryId]=(byCat[s.categoryId]||0)+s.amount; byCatN[s.categoryId]=(byCatN[s.categoryId]||0)+1; }));
   const cats = Object.entries(byCat).map(([id,amt])=>({c:catById(id)||{name:'Uncategorised',color:'#8b938d',icon:'•'},amt,n:byCatN[id]||0}))
                  .sort((a,b)=>b.amt-a.amt);
   let acc=0; const stops = cats.map(x=>{ const from=acc/total*360; acc+=x.amt; const to=acc/total*360; return `${x.c.color} ${from}deg ${to}deg`; });
@@ -946,13 +949,13 @@ function renderReports(){
 
   // needs/wants/savings
   const cls = {need:0,want:0,saving:0,debt:0,na:0};
-  P.filter(t=>t.kind!=='income').forEach(t=>{ const c=catById(t.categoryId); if(c) cls[c.class]=(cls[c.class]||0)+t.amount; });
+  P.filter(t=>t.kind!=='income').forEach(t=> splitsOf(t).forEach(s=>{ const c=catById(s.categoryId); if(c) cls[c.class]=(cls[c.class]||0)+s.amount; }));
   const clsTotal = Object.values(cls).reduce((a,b)=>a+b,0)||1;
   const clsColor = {need:'var(--pos)',want:'var(--neg)',saving:'var(--neu)',debt:'var(--warn)',na:'var(--border-strong)'};
 
   // spend priority (Mandate/Need/Want/Wish/Extra)
   const pri = {mandate:0,need:0,want:0,wish:0,extra:0};
-  exp.forEach(t=>{ const c=catById(t.categoryId); if(c && pri[c.priority]!==undefined) pri[c.priority]+=t.amount; });
+  exp.forEach(t=> splitsOf(t).forEach(s=>{ const c=catById(s.categoryId); if(c && pri[c.priority]!==undefined) pri[c.priority]+=s.amount; }));
   const priTotal = Object.values(pri).reduce((a,b)=>a+b,0)||1;
 
   // daily bars + calendar heatmap
@@ -1101,8 +1104,9 @@ function printStatement(){
         <th style="padding:4px">Date</th><th style="padding:4px">Category</th><th style="padding:4px">Note</th><th style="padding:4px;text-align:right">Amount</th>
       </tr></thead>
       <tbody>
-        ${rows.map(t=>{ const c=catById(t.categoryId); const sign=t.kind==='income'?'+':t.kind==='expense'?'-':'';
-          return `<tr style="border-bottom:1px solid #ccc"><td style="padding:4px">${fmtDay(t.date)}</td><td style="padding:4px">${esc(c?c.name:'—')}</td><td style="padding:4px">${esc(t.note||'')}</td><td style="padding:4px;text-align:right">${sign}${money(t.amount)}</td></tr>`;
+        ${rows.map(t=>{ const sign=t.kind==='income'?'+':t.kind==='expense'?'-':'';
+          const catLabel = t.splits && t.splits.length>1 ? t.splits.map(s=>{ const sc=catById(s.categoryId); return (sc?sc.name:'—')+' '+money(s.amount); }).join(', ') : (catById(t.categoryId)?catById(t.categoryId).name:'—');
+          return `<tr style="border-bottom:1px solid #ccc"><td style="padding:4px">${fmtDay(t.date)}</td><td style="padding:4px">${esc(catLabel)}</td><td style="padding:4px">${esc(t.note||'')}</td><td style="padding:4px;text-align:right">${sign}${money(t.amount)}</td></tr>`;
         }).join('') || '<tr><td colspan="4" style="padding:8px">No transactions this period</td></tr>'}
       </tbody>
     </table>
@@ -1121,7 +1125,7 @@ function openDayDrill(iso){
 }
 function openCatDrill(catId){
   const c = catById(catId)||{name:'—'};
-  const list = periodTxns().filter(t=>t.categoryId===catId).sort((a,b)=>b.date.localeCompare(a.date));
+  const list = periodTxns().filter(t=>splitsOf(t).some(s=>s.categoryId===catId)).sort((a,b)=>b.date.localeCompare(a.date));
   openSheet(`<h2>${esc(c.icon||'')} ${esc(c.name)}</h2>
     <div class="view-sub">${list.length} transactions · ${money(list.reduce((s,t)=>s+t.amount,0))}</div>
     <div class="card tight">${list.map(txRow).join('')||'<div class="empty">None</div>'}</div>`);
@@ -1149,6 +1153,13 @@ function openAddSheet(seed){
     if(addDraft.kind==='income'  && !addDraft.toId)   addDraft.toId   = (last && last.toId) || (cache.accounts[0]&&cache.accounts[0].id);
   }
   drawAddSheet(editing);
+}
+function splitRowHtml(s, cats){
+  return `<div class="btnrow" data-splitrow style="align-items:center">
+    <select class="splitCat" style="flex:2">${cats.map(c=>`<option value="${c.id}" ${s.categoryId===c.id?'selected':''}>${esc(c.name)}</option>`).join('')}</select>
+    <input class="splitAmt" inputmode="decimal" style="flex:1" value="${s.amount?(s.amount/100):''}" placeholder="₹">
+    <button class="btn sm danger splitDel" type="button">✕</button>
+  </div>`;
 }
 function drawAddSheet(editing){
   const d = addDraft;
@@ -1186,10 +1197,25 @@ function drawAddSheet(editing){
       ${favs.map(c=>`<button class="chip ${d.categoryId===c.id?'on':''}" data-c="${c.id}"><span class="cx">${c.icon}</span>${esc(c.name)}</button>`).join('')}
     </div>`:''}
 
-    <div class="lbl">Category</div>
-    <div class="catgrid" id="catGrid">
-      ${cats.map(c=>`<button data-c="${c.id}" class="${d.categoryId===c.id?'on':''}"><span class="ce">${c.icon}</span>${esc(c.name)}</button>`).join('')}
-      <button data-cnew class="cat-new"><span class="ce">+</span>Other</button>
+    <div class="lbl" style="display:flex;justify-content:space-between;align-items:center">Category
+      <label style="font-size:.7rem;font-weight:500;display:flex;align-items:center;gap:4px;cursor:pointer">
+        <input type="checkbox" id="splitToggle" ${d.splits&&d.splits.length?'checked':''} style="width:auto"> Split across categories
+      </label>
+    </div>
+    <div id="catSingleWrap"${d.splits&&d.splits.length?' style="display:none"':''}>
+      <div class="catgrid" id="catGrid">
+        ${cats.map(c=>`<button data-c="${c.id}" class="${d.categoryId===c.id?'on':''}"><span class="ce">${c.icon}</span>${esc(c.name)}</button>`).join('')}
+        <button data-cnew class="cat-new"><span class="ce">+</span>Other</button>
+      </div>
+    </div>
+    <div id="catSplitWrap"${!(d.splits&&d.splits.length)?' style="display:none"':''}>
+      <div id="splitRows">
+        ${(d.splits&&d.splits.length?d.splits:[{categoryId:cats[0]&&cats[0].id,amount:0}]).map(s=>splitRowHtml(s,cats)).join('')}
+      </div>
+      <div class="btnrow" style="align-items:center">
+        <button class="btn sm" id="addSplitRow" type="button">+ Add split</button>
+        <span class="hintline" id="splitTotal" style="margin-left:auto;margin-top:0"></span>
+      </div>
     </div>
 
     <label class="fld" style="margin-top:14px"><span class="lbl">Date</span>
@@ -1216,7 +1242,7 @@ function drawAddSheet(editing){
   `);
 
   $('#segKind').onclick = e=>{ const btn=e.target.closest('button'); if(!btn) return;
-    addDraft.kind = btn.dataset.k; addDraft.categoryId=null;
+    addDraft.kind = btn.dataset.k; addDraft.categoryId=null; addDraft.splits=null;
     if(addDraft.kind==='expense'){ addDraft.fromId = addDraft.fromId || (cache.accounts[0]&&cache.accounts[0].id); addDraft.toId=null; }
     if(addDraft.kind==='income'){ addDraft.toId = addDraft.toId || (cache.accounts[0]&&cache.accounts[0].id); addDraft.fromId=null; }
     if(addDraft.kind==='transfer'){ addDraft.fromId = addDraft.fromId||(cache.accounts[0]&&cache.accounts[0].id); addDraft.toId = addDraft.toId||(cache.accounts[1]&&cache.accounts[1].id); }
@@ -1228,6 +1254,36 @@ function drawAddSheet(editing){
     pick(b.dataset.c);
   };
   if($('#favChips')) $('#favChips').onclick = e=>{ const b=e.target.closest('button'); if(b) pick(b.dataset.c); };
+  const wireSplitRows = ()=>{
+    $$('#splitRows [data-splitrow]').forEach(row=>{
+      row.querySelector('.splitDel').onclick = ()=>{ if($$('#splitRows [data-splitrow]').length>1){ row.remove(); updateSplitTotal(); } };
+      row.querySelector('.splitAmt').oninput = updateSplitTotal;
+    });
+  };
+  const updateSplitTotal = ()=>{
+    const rowsNow = $$('#splitRows [data-splitrow]');
+    const sum = rowsNow.reduce((s,row)=> s+parseAmount(row.querySelector('.splitAmt').value), 0);
+    const total = parseAmount($('#amt').value);
+    const el = $('#splitTotal'); if(!el) return;
+    el.textContent = money(sum) + ' of ' + money(total);
+    el.style.color = (sum===total && total>0) ? 'var(--pos)' : 'var(--neg)';
+  };
+  if($('#splitToggle')){
+    $('#splitToggle').onchange = e=>{
+      syncDraftFromInputs();
+      if(e.target.checked){ if(!addDraft.splits || !addDraft.splits.length) addDraft.splits=[{categoryId:addDraft.categoryId||(cats[0]&&cats[0].id), amount:addDraft.amount||0}]; }
+      else addDraft.splits = null;
+      drawAddSheet(editing);
+    };
+    wireSplitRows(); updateSplitTotal();
+    $('#amt').addEventListener('input', updateSplitTotal);
+    if($('#addSplitRow')) $('#addSplitRow').onclick = ()=>{
+      const wrap = $('#splitRows');
+      const tmp = document.createElement('div'); tmp.innerHTML = splitRowHtml({categoryId:cats[0]&&cats[0].id, amount:0}, cats);
+      wrap.appendChild(tmp.firstElementChild);
+      wireSplitRows(); updateSplitTotal();
+    };
+  }
   if($('#addCardLink')) $('#addCardLink').onclick = ()=>{ syncDraftFromInputs(); returnToAddAfterCard = editing; openCardSheet(); };
   if($('#rcptPick')) $('#rcptPick').onclick = ()=> $('#rcptFile').click();
   if($('#rcptClear')) $('#rcptClear').onclick = ()=>{ syncDraftFromInputs(); addDraft.receipt=null; drawAddSheet(editing); };
@@ -1300,7 +1356,21 @@ async function saveTx(){
   if(d.kind==='income'){ d.fromId = null; }
   else if(d.kind==='expense'){ d.toId = null; }
   if(!d.amount || d.amount<=0) return toast('Enter an amount');
-  if(!d.categoryId) return toast('Pick a category');
+  const splitMode = $('#splitToggle') && $('#splitToggle').checked;
+  if(splitMode){
+    const splits = $$('#splitRows [data-splitrow]').map(row=>({
+      categoryId: row.querySelector('.splitCat').value,
+      amount: parseAmount(row.querySelector('.splitAmt').value)
+    })).filter(s=>s.amount>0);
+    if(!splits.length) return toast('Add at least one split');
+    const sum = splits.reduce((s,x)=>s+x.amount,0);
+    if(sum !== d.amount) return toast('Splits must add up to '+money(d.amount));
+    d.splits = splits;
+    d.categoryId = splits.slice().sort((a,b)=>b.amount-a.amount)[0].categoryId;
+  } else {
+    d.splits = null;
+    if(!d.categoryId) return toast('Pick a category');
+  }
   if(d.kind!=='income' && !d.fromId) return toast('Pick an account');
   if(d.kind==='income' && !d.toId) return toast('Pick an account');
   if(d.kind==='transfer' && d.fromId===d.toId) return toast('From and To must differ');
@@ -1884,9 +1954,10 @@ function openSettings(){
       ${daysSinceExport()!==null?`Last export: ${daysSinceExport()===0?'today':daysSinceExport()+' days ago'}.`:'Never exported yet.'}</p>
     <div class="btnrow">
       <button class="btn sm" id="csvBtn">🏦 Import bank statement (CSV)</button>
+      <button class="btn sm" id="csvExportBtn">⬇ Export transactions (CSV)</button>
     </div>
     <input type="file" id="csvFile" accept=".csv,text/csv" hidden>
-    <p class="hintline">Bulk-add transactions from a bank CSV export — you map the columns yourself, nothing is auto-detected from your bank.</p>
+    <p class="hintline">Bulk-add transactions from a bank CSV export — you map the columns yourself, nothing is auto-detected from your bank. Export is a plain spreadsheet-friendly CSV of every transaction, for Excel/Sheets.</p>
     <div class="divider"></div>
     <div class="section-label" style="margin:0 0 8px">Reminders</div>
     <label class="fld"><span class="lbl" style="display:flex;justify-content:space-between">Browser alerts for card bills &amp; repayments due soon
@@ -1939,6 +2010,7 @@ function openSettings(){
   $('#impFile').onchange = importJSON;
   $('#shareBtn').onclick = shareJSON;
   $('#csvBtn').onclick = ()=> $('#csvFile').click();
+  $('#csvExportBtn').onclick = exportTransactionsCSV;
   $('#csvFile').onchange = onCsvFileChosen;
   $('#notifyDue').onchange = async e=>{
     if(e.target.checked){
@@ -2018,6 +2090,29 @@ async function importJSON(e){
     closeSheet(); render(); toast('Imported');
   }catch(err){ toast('Import failed — bad file'); }
   finally{ e.target.value=''; }
+}
+function csvEscape(s){
+  s = String(s==null?'':s);
+  return /[",\n]/.test(s) ? '"' + s.replace(/"/g,'""') + '"' : s;
+}
+function exportTransactionsCSV(){
+  const rows = [['Date','Type','From','To','Category','Amount','Note','Tags']];
+  [...cache.transactions].sort((a,b)=> (a.date+a.createdAt).localeCompare(b.date+b.createdAt)).forEach(t=>{
+    splitsOf(t).forEach(s=>{
+      const c = catById(s.categoryId);
+      rows.push([
+        t.date, t.kind, nodeName(t.fromId)||'', nodeName(t.toId)||'', c?c.name:'',
+        (s.amount/100).toFixed(2), t.note||'', (t.tags||[]).filter(tg=>tg!=='imported').join('; ')
+      ]);
+    });
+  });
+  const csv = rows.map(r=>r.map(csvEscape).join(',')).join('\r\n');
+  const blob = new Blob([csv], {type:'text/csv'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a'); a.href=url; a.download = `leo-finance-transactions-${todayISO()}.csv`;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(()=>URL.revokeObjectURL(url), 1000);
+  toast('CSV exported');
 }
 /* ============================================================
    7b. CSV bank-statement import
@@ -2266,7 +2361,7 @@ function openCategoryManager(){
   $$('[data-rtc]').forEach(b=> b.onclick = async ()=>{ const c=catById(b.dataset.rtc); c.isRoutine=!c.isRoutine; await idbPut('categories',c); await reloadCache(); openCategoryManager(); });
   $$('[data-budc]').forEach(inp=> inp.onchange = async ()=>{ const c=catById(inp.dataset.budc); c.monthlyBudget=parseAmount(inp.value); await idbPut('categories',c); await reloadCache(); toast('Budget set'); });
   $$('[data-delc]').forEach(b=> b.onclick = async ()=>{
-    if(cache.transactions.some(t=>t.categoryId===b.dataset.delc)) return toast('In use — cannot delete');
+    if(cache.transactions.some(t=>splitsOf(t).some(s=>s.categoryId===b.dataset.delc))) return toast('In use — cannot delete');
     await idbDel('categories', b.dataset.delc); await reloadCache(); openCategoryManager();
   });
 }
@@ -2350,8 +2445,8 @@ function openSearchSheet(){
       if(max>0 && t.amount>max) return false;
       if(tagQ && !(t.tags||[]).some(tg=>tg.toLowerCase().includes(tagQ))) return false;
       if(text){
-        const c = catById(t.categoryId);
-        const hay = ((t.note||'')+' '+(c?c.name:'')).toLowerCase();
+        const catNames = splitsOf(t).map(s=>{ const sc=catById(s.categoryId); return sc?sc.name:''; }).join(' ');
+        const hay = ((t.note||'')+' '+catNames).toLowerCase();
         if(!hay.includes(text)) return false;
       }
       return true;
