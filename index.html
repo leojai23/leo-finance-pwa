@@ -1732,6 +1732,10 @@ function openSettings(){
       <button class="btn" id="expBtn">⬇ Export JSON</button>
       <button class="btn" id="impBtn">⬆ Import JSON</button>
     </div>
+    <div class="btnrow">
+      <button class="btn" id="shareBtn">📤 Share backup (e.g. to Gmail)</button>
+    </div>
+    <p class="hintline">Share opens your phone's share sheet so you can send the backup file straight to Gmail (or any app) in one go.</p>
     <input type="file" id="impFile" accept="application/json" hidden>
     <p class="hintline">Export regularly — data lives only on this device. Import replaces everything.
       ${daysSinceExport()!==null?`Last export: ${daysSinceExport()===0?'today':daysSinceExport()+' days ago'}.`:'Never exported yet.'}</p>
@@ -1763,6 +1767,7 @@ function openSettings(){
   $('#expBtn').onclick = exportJSON;
   $('#impBtn').onclick = ()=> $('#impFile').click();
   $('#impFile').onchange = importJSON;
+  $('#shareBtn').onclick = shareJSON;
   $('#csvBtn').onclick = ()=> $('#csvFile').click();
   $('#csvFile').onchange = onCsvFileChosen;
   $('#notifyDue').onchange = async e=>{
@@ -1791,6 +1796,23 @@ async function exportJSON(){
   lastExportAt = new Date().toISOString();
   await metaPut('lastExport', lastExportAt);
   toast('Exported'); render();
+}
+async function shareJSON(){
+  const dump = { app:'leo-finance', version:1, exportedAt:new Date().toISOString(), settings };
+  for(const s of STORES) dump[s] = cache[s];
+  const filename = `leo-finance-${todayISO()}.json`;
+  const file = new File([JSON.stringify(dump,null,2)], filename, {type:'application/json'});
+  if(navigator.canShare && navigator.canShare({files:[file]})){
+    try{
+      await navigator.share({files:[file], title:'Leo Finance backup', text:'Leo Finance backup '+todayISO()});
+      lastExportAt = new Date().toISOString();
+      await metaPut('lastExport', lastExportAt);
+      render();
+    }catch(err){ if(err.name!=='AbortError') toast('Share failed'); }
+  } else {
+    toast('Sharing not supported here — exporting instead');
+    exportJSON();
+  }
 }
 let lastExportAt = null;
 function daysSinceExport(){
