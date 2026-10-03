@@ -250,6 +250,7 @@ textarea{min-height:52px; resize:vertical;}
 }
 .catgrid button .ce{font-size:1.25rem;}
 .catgrid button.on{border-color:var(--accent); background:var(--accent-soft); color:var(--accent);}
+.catgrid button.cat-new{border-style:dashed;}
 
 /* ---------- donut + bars ---------- */
 .donut-wrap{display:flex; align-items:center; gap:16px; flex-wrap:wrap;}
@@ -1034,6 +1035,7 @@ function drawAddSheet(editing){
       <label class="fld"><span class="lbl">Into account</span><select id="toId">${accOpts(d.toId)}</select></label>
     ` : `
       <label class="fld"><span class="lbl">Paid from</span><select id="fromId">${accOpts(d.fromId,true)}</select></label>
+      ${!cache.creditCards.filter(c=>!c.archived).length ? `<p class="hintline">No credit cards yet — <a href="javascript:void(0)" id="addCardLink">add one</a> to pay from a card.</p>` : ''}
     `}
 
     ${favs.length && !editing ? `<div class="lbl">Quick pick</div><div class="chips" style="margin-bottom:12px" id="favChips">
@@ -1043,6 +1045,7 @@ function drawAddSheet(editing){
     <div class="lbl">Category</div>
     <div class="catgrid" id="catGrid">
       ${cats.map(c=>`<button data-c="${c.id}" class="${d.categoryId===c.id?'on':''}"><span class="ce">${c.icon}</span>${esc(c.name)}</button>`).join('')}
+      <button data-cnew class="cat-new"><span class="ce">+</span>Other</button>
     </div>
 
     <label class="fld" style="margin-top:14px"><span class="lbl">Date</span>
@@ -1064,10 +1067,38 @@ function drawAddSheet(editing){
     syncDraftFromInputs(); drawAddSheet(editing);
   };
   const pick = id=>{ addDraft.categoryId = id; $$('#catGrid button,#favChips button').forEach(b=>b.classList.toggle('on', b.dataset.c===id)); };
-  $('#catGrid').onclick = e=>{ const b=e.target.closest('button'); if(b) pick(b.dataset.c); };
+  $('#catGrid').onclick = e=>{ const b=e.target.closest('button'); if(!b) return;
+    if(b.hasAttribute('data-cnew')){ syncDraftFromInputs(); openQuickCategorySheet(d.kind, nc=>{ addDraft.categoryId = nc.id; closeSheet(); drawAddSheet(editing); toast('Category added'); }); return; }
+    pick(b.dataset.c);
+  };
   if($('#favChips')) $('#favChips').onclick = e=>{ const b=e.target.closest('button'); if(b) pick(b.dataset.c); };
+  if($('#addCardLink')) $('#addCardLink').onclick = ()=>{ syncDraftFromInputs(); returnToAddAfterCard = editing; openCardSheet(); };
   $('#saveTx').onclick = saveTx;
   if($('#delTx')) $('#delTx').onclick = ()=> delTx(editing);
+}
+let returnToAddAfterCard = null;
+function openQuickCategorySheet(kind, onSaved){
+  let color = CAT_COLORS[Math.floor(Math.random()*CAT_COLORS.length)];
+  openSheet(`
+    <h2>New category</h2>
+    <div class="btnrow">
+      <label class="fld" style="flex:2"><span class="lbl">Name</span><input id="qcName" placeholder="e.g. Pet care"></label>
+      <label class="fld" style="flex:1"><span class="lbl">Icon</span><input id="qcIcon" value="•" maxlength="2"></label>
+    </div>
+    <div class="lbl">Colour</div>
+    <div class="chips" id="qcColors" style="margin-bottom:14px">
+      ${CAT_COLORS.map(col=>`<button class="chip" data-col="${col}" style="border-color:${col};${color===col?`background:${col};color:#fff`:''}"><span style="width:12px;height:12px;border-radius:3px;background:${col};display:inline-block"></span></button>`).join('')}
+    </div>
+    <button class="btn primary wide" id="qcSave">Add category</button>
+  `);
+  $('#qcColors').onclick = e=>{ const b=e.target.closest('button'); if(!b) return; color=b.dataset.col;
+    $$('#qcColors button').forEach(x=>{ const on=x.dataset.col===color; x.style.background=on?color:''; x.style.color=on?'#fff':''; }); };
+  $('#qcSave').onclick = async ()=>{
+    const name = $('#qcName').value.trim(); if(!name) return toast('Enter a name');
+    const c = {id:uid(), name, kind, class:'na', priority:'', isRoutine:false, isFavourite:false, icon:($('#qcIcon').value.trim()||'•'), color, order:cache.categories.length, monthlyBudget:0};
+    await idbPut('categories', c); await reloadCache();
+    onSaved(c);
+  };
 }
 function syncDraftFromInputs(){
   if($('#amt')) addDraft.amount = parseAmount($('#amt').value);
@@ -1471,7 +1502,9 @@ function openCardSheet(c){
     c.creditLimit = parseAmount($('#cl').value);
     c.billingCycleDay = Math.min(28, Math.max(1, +$('#cb').value||1));
     c.dueDay = Math.min(28, Math.max(1, +$('#cd').value||18));
-    await idbPut('creditCards', c); await reloadCache(); closeSheet(); render(); toast('Saved');
+    await idbPut('creditCards', c); await reloadCache();
+    if(!e && returnToAddAfterCard!==null){ const ed=returnToAddAfterCard; returnToAddAfterCard=null; closeSheet(); drawAddSheet(ed); toast('Card added'); return; }
+    closeSheet(); render(); toast('Saved');
   };
   if(e){
     $('#addStmt').onclick = async ()=>{
