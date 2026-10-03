@@ -817,7 +817,7 @@ function renderMoney(){
     <div class="card tight">
       ${accs.map(a=>`<div class="row tappable" data-acc="${a.id}">
         <div class="ic">${a.type==='bank'?'🏦':a.type==='wallet'?'📱':'💵'}</div>
-        <div class="rmain"><div class="rtitle">${esc(a.name)}</div><div class="rsub">${esc(a.type)}</div></div>
+        <div class="rmain"><div class="rtitle">${esc(a.name)}</div><div class="rsub">${esc(a.type)}${a.note?' · '+esc(a.note):''}</div></div>
         <div class="ramt tnum ${accountBalance(a.id)<0?'neg':''}">${money(accountBalance(a.id))}</div>
       </div>`).join('')}
       <div class="row"><button class="btn ghost" id="addAcc">+ Add account</button></div>
@@ -1443,13 +1443,14 @@ async function delTx(){
    6. Sheets — Account / Holding / Fixed asset / Loan
    ============================================================ */
 function openAccountSheet(a){
-  const e = !!a; a = a || {id:uid(), name:'', type:'bank', openingBalance:0, archived:false, order:cache.accounts.length};
+  const e = !!a; a = a || {id:uid(), name:'', type:'bank', openingBalance:0, note:'', archived:false, order:cache.accounts.length};
   openSheet(`
     <h2>${e?'Edit account':'New account'}</h2>
     <label class="fld"><span class="lbl">Name</span><input id="an" value="${esc(a.name)}" placeholder="e.g. HDFC Savings"></label>
     <label class="fld"><span class="lbl">Type</span><select id="at">
       ${['bank','cash','wallet'].map(t=>`<option ${a.type===t?'selected':''}>${t}</option>`).join('')}</select></label>
     <label class="fld"><span class="lbl">Opening balance (₹)</span><input id="ao" inputmode="decimal" value="${a.openingBalance? (a.openingBalance/100):''}" placeholder="0"></label>
+    <label class="fld"><span class="lbl">Note (optional)</span><input id="an2" value="${esc(a.note||'')}" placeholder="e.g. account number, branch, IFSC"></label>
     <button class="btn primary wide" id="sv">${e?'Save':'Add'}</button>
     ${e?`<div class="btnrow" style="margin-top:10px"><button class="btn danger wide" id="dl">Delete account</button></div>
         <p class="hintline">Deleting does not remove its transactions.</p>`:''}
@@ -1458,6 +1459,7 @@ function openAccountSheet(a){
     a.name = $('#an').value.trim() || 'Account';
     a.type = $('#at').value;
     a.openingBalance = parseAmount($('#ao').value);
+    a.note = $('#an2').value.trim();
     await idbPut('accounts', a); await reloadCache(); closeSheet(); render(); toast('Saved');
   };
   if(e) $('#dl').onclick = async ()=>{ await idbDel('accounts', a.id); await reloadCache(); closeSheet(); render(); toast('Deleted'); };

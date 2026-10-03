@@ -1,6 +1,6 @@
 /* Leo Finance - service worker
    Cache-first with network fallback. Bump CACHE_NAME whenever index.html changes. */
-const CACHE_NAME = 'leo-finance-v14';
+const CACHE_NAME = 'leo-finance-v15';
 const ASSETS = [
   './',
   './index.html',
