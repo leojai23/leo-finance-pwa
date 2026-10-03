@@ -309,7 +309,10 @@ textarea{min-height:52px; resize:vertical;}
 <div class="app">
   <div class="topbar">
     <div class="brand"><b>Leo&nbsp;Finance</b><span id="periodLabel"></span></div>
-    <button class="iconbtn" id="btnSettings" aria-label="Settings">&#9881;</button>
+    <div style="display:flex;gap:8px">
+      <button class="iconbtn" id="btnSearch" aria-label="Search transactions">&#128269;</button>
+      <button class="iconbtn" id="btnSettings" aria-label="Settings">&#9881;</button>
+    </div>
   </div>
   <main id="view"><!-- rendered --></main>
 </div>
@@ -625,6 +628,7 @@ function renderHome(){
 
   const pending = pendingRecurring();
   const dueSoon = dueSoonStatements();
+  const loansDue = loansDueSoon();
   const recent = cache.transactions.slice(0,8);
   const daysExp = daysSinceExport();
   const showBackupNudge = daysExp===null || daysExp>=14;
@@ -643,6 +647,18 @@ function renderHome(){
           <div class="ic">💳</div>
           <div class="rmain"><div class="rtitle">${esc(card?card.name:'Card')}</div><div class="rsub">${when} · min ${moneyR(s.minDue)}</div></div>
           <div class="ramt neg tnum">${money(bal)}<small><button class="btn sm" data-paystmt="${s.id}">Pay</button></small></div>
+        </div>`;
+      }).join('')}
+    </div>`:''}
+
+    ${loansDue.length? `<div class="section-label">Repayments due · ${loansDue.length}</div>
+    <div class="card tight" id="loansDueCard">
+      ${loansDue.map(l=>{ const left=daysUntil(l.dueDate); const bal=loanOutstanding(l.id);
+        const when = left<0?`Overdue ${Math.abs(left)}d`: left===0?'Due today':`Due in ${left}d`;
+        return `<div class="row">
+          <div class="ic">${l.direction==='lent'?'🤝':'📥'}</div>
+          <div class="rmain"><div class="rtitle">${esc(l.person)}</div><div class="rsub">${when} · ${l.direction==='lent'?'owes you':'you owe'}</div></div>
+          <div class="ramt ${l.direction==='lent'?'pos':'neg'} tnum">${money(bal)}<small><button class="btn sm" data-loandue="${l.id}">View</button></small></div>
         </div>`;
       }).join('')}
     </div>`:''}
@@ -707,6 +723,7 @@ function renderHome(){
     const s = cache.cardStatements.find(x=>x.id===b.dataset.paystmt); if(!s) return;
     openCardPay(cardById(s.cardId), s);
   });
+  $$('#loansDueCard [data-loandue]').forEach(b=> b.onclick = ()=> openLoanSheet(loanById(b.dataset.loandue)));
   wireTxRows();
 }
 function daysUntil(iso){ return Math.ceil((new Date(iso+'T00:00:00') - new Date(todayISO()+'T00:00:00'))/864e5); }
@@ -714,17 +731,31 @@ function dueSoonStatements(){
   return cache.cardStatements.filter(s=> s.status!=='paid' && s.dueDate && daysUntil(s.dueDate)<=3)
     .sort((a,b)=> a.dueDate.localeCompare(b.dueDate));
 }
+function loansDueSoon(){
+  return cache.loans.filter(l=> l.status!=='settled' && l.dueDate && daysUntil(l.dueDate)<=3 && loanOutstanding(l.id)>0)
+    .sort((a,b)=> a.dueDate.localeCompare(b.dueDate));
+}
 function checkDueNotifications(){
   if(!settings.notifyDue || typeof Notification==='undefined' || Notification.permission!=='granted') return;
   const today = todayISO();
   for(const s of dueSoonStatements()){
-    const key = 'leofin-notified-'+s.id+'-'+today;
+    const key = 'leofin-notified-card-'+s.id+'-'+today;
     if(localStorage.getItem(key)) continue;
     const card = cardById(s.cardId);
     const left = daysUntil(s.dueDate);
     const when = left<0?`overdue by ${Math.abs(left)}d`: left===0?'due today':`due in ${left}d`;
     try{
       new Notification('Card bill ' + when, { body: `${card?card.name:'Card'} · ${money(s.totalDue-(s.amountPaid||0))} remaining` });
+      localStorage.setItem(key, '1');
+    }catch(e){}
+  }
+  for(const l of loansDueSoon()){
+    const key = 'leofin-notified-loan-'+l.id+'-'+today;
+    if(localStorage.getItem(key)) continue;
+    const left = daysUntil(l.dueDate);
+    const when = left<0?`overdue by ${Math.abs(left)}d`: left===0?'due today':`due in ${left}d`;
+    try{
+      new Notification('Repayment ' + when, { body: `${l.person} · ${money(loanOutstanding(l.id))} ${l.direction==='lent'?'owed to you':'you owe'}` });
       localStorage.setItem(key, '1');
     }catch(e){}
   }
@@ -847,7 +878,7 @@ function renderPeople(){
     return `<div class="row tappable" data-loan="${l.id}">
       <div class="ic">${l.direction==='lent'?'🤝':'📥'}</div>
       <div class="rmain"><div class="rtitle">${esc(l.person)}${l.status==='settled'?' <span class="badge">settled</span>':''}</div>
-        <div class="rsub">${esc(l.reason||'—')} · lent ${moneyR(l.principal)}</div></div>
+        <div class="rsub">${esc(l.reason||'—')} · lent ${moneyR(l.principal)}${l.dueDate && l.status!=='settled'?' · due '+fmtDay(l.dueDate):''}</div></div>
       <div class="ramt tnum ${os>0?(l.direction==='lent'?'pos':'neg'):'faint'}">${money(os)}<small>outstanding</small></div>
     </div>`;
   }).join('') : `<div class="empty">Nothing here</div>`;
@@ -1484,7 +1515,7 @@ function openFixedSheet(f){
 
 function openLoanSheet(l){
   const e = l && l.id;
-  l = Object.assign({id:uid(), direction:'lent', person:'', principal:0, date:todayISO(), reason:'', status:'open'}, l||{});
+  l = Object.assign({id:uid(), direction:'lent', person:'', principal:0, date:todayISO(), reason:'', status:'open', dueDate:''}, l||{});
   const os = e ? loanOutstanding(l.id) : 0;
   const accOpts = cache.accounts.filter(a=>!a.archived).map(a=>`<option value="${a.id}">${esc(a.name)}</option>`).join('');
   openSheet(`
@@ -1494,6 +1525,7 @@ function openLoanSheet(l){
       <input id="lpr" inputmode="decimal" value="${l.principal? (l.principal/100):''}" ${e?'disabled':''}></label>
     <label class="fld"><span class="lbl">Reason / note</span><input id="lr" value="${esc(l.reason)}"></label>
     <label class="fld"><span class="lbl">Date</span><input type="date" id="ld" value="${l.date}" max="${todayISO()}"></label>
+    <label class="fld"><span class="lbl">${l.direction==='lent'?'They should repay by':'You should repay by'} (optional)</span><input type="date" id="lDue" value="${l.dueDate||''}"></label>
     ${!e?`<label class="fld"><span class="lbl">${l.direction==='lent'?'Money went out of':'Money came into'} (optional — posts a transfer)</span>
       <select id="lacc"><option value="">— don't post a transfer —</option>${accOpts}</select></label>`:''}
     <button class="btn primary wide" id="sv">${e?'Save':'Record'}</button>
@@ -1519,6 +1551,7 @@ function openLoanSheet(l){
     l.person = $('#lp').value.trim() || 'Someone';
     l.reason = $('#lr').value.trim();
     l.date = $('#ld').value || todayISO();
+    l.dueDate = $('#lDue').value || '';
     if(!e){
       l.principal = parseAmount($('#lpr').value);
       if(l.principal<=0) return toast('Enter an amount');
@@ -1812,7 +1845,7 @@ function openSettings(){
     <p class="hintline">Bulk-add transactions from a bank CSV export — you map the columns yourself, nothing is auto-detected from your bank.</p>
     <div class="divider"></div>
     <div class="section-label" style="margin:0 0 8px">Reminders</div>
-    <label class="fld"><span class="lbl" style="display:flex;justify-content:space-between">Browser alerts for card bills due soon
+    <label class="fld"><span class="lbl" style="display:flex;justify-content:space-between">Browser alerts for card bills &amp; repayments due soon
       <input type="checkbox" id="notifyDue" ${settings.notifyDue?'checked':''} style="width:auto"></span></label>
     <p class="hintline">Only fires while the app is open on this device — this is a browser notification, not a push alert that wakes your phone.</p>
     <div class="divider"></div>
@@ -2236,6 +2269,53 @@ $('#tabbar').addEventListener('click', e=>{
   window.scrollTo(0,0);
 });
 $('#btnSettings').addEventListener('click', openSettings);
+$('#btnSearch').addEventListener('click', openSearchSheet);
+function openSearchSheet(){
+  openSheet(`
+    <h2>Search transactions</h2>
+    <label class="fld"><span class="lbl">Text (note or category)</span><input id="sqText" placeholder="e.g. swiggy, rent"></label>
+    <div class="btnrow">
+      <label class="fld" style="flex:1"><span class="lbl">From</span><input type="date" id="sqFrom"></label>
+      <label class="fld" style="flex:1"><span class="lbl">To</span><input type="date" id="sqTo" value="${todayISO()}"></label>
+    </div>
+    <div class="btnrow">
+      <label class="fld" style="flex:1"><span class="lbl">Min ₹</span><input id="sqMin" inputmode="decimal"></label>
+      <label class="fld" style="flex:1"><span class="lbl">Max ₹</span><input id="sqMax" inputmode="decimal"></label>
+    </div>
+    <label class="fld"><span class="lbl">Type</span><select id="sqKind">
+      <option value="">All</option><option value="expense">Expense</option><option value="income">Income</option><option value="transfer">Transfer</option>
+    </select></label>
+    <div class="section-label" id="sqCount">Type to search</div>
+    <div class="card tight" id="sqResults" style="max-height:48vh;overflow:auto"></div>
+  `);
+  const run = ()=>{
+    const text = $('#sqText').value.trim().toLowerCase();
+    const from = $('#sqFrom').value, to = $('#sqTo').value;
+    const min = parseAmount($('#sqMin').value), max = parseAmount($('#sqMax').value);
+    const kind = $('#sqKind').value;
+    let results = cache.transactions.filter(t=>{
+      if(kind && t.kind!==kind) return false;
+      if(from && t.date<from) return false;
+      if(to && t.date>to) return false;
+      if(min>0 && t.amount<min) return false;
+      if(max>0 && t.amount>max) return false;
+      if(text){
+        const c = catById(t.categoryId);
+        const hay = ((t.note||'')+' '+(c?c.name:'')).toLowerCase();
+        if(!hay.includes(text)) return false;
+      }
+      return true;
+    });
+    results.sort((a,b)=>(b.date+b.createdAt).localeCompare(a.date+a.createdAt));
+    const spent = results.filter(t=>t.kind==='expense').reduce((s,t)=>s+t.amount,0);
+    $('#sqCount').textContent = results.length + ' result' + (results.length===1?'':'s') + (spent? ' · ' + money(spent) + ' spent' : '');
+    $('#sqResults').innerHTML = results.slice(0,200).map(txRow).join('') || '<div class="empty">No matches</div>';
+    wireTxRows();
+  };
+  ['sqText','sqFrom','sqTo','sqMin','sqMax'].forEach(id=> $('#'+id).oninput = run);
+  $('#sqKind').onchange = run;
+  run();
+}
 
 (async function boot(){
   try{
