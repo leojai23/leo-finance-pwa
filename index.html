@@ -934,11 +934,12 @@ function renderPeople(){
   const bor  = cache.loans.filter(l=>l.direction==='borrowed');
   const card = list => list.length ? list.map(l=>{
     const os = loanOutstanding(l.id);
-    return `<div class="row tappable" data-loan="${l.id}">
+    return `<div class="row tappable" data-loan="${l.id}" style="flex-wrap:wrap">
       <div class="ic">${l.direction==='lent'?'🤝':'📥'}</div>
       <div class="rmain"><div class="rtitle">${esc(l.person)}${l.status==='settled'?' <span class="badge">settled</span>':''}</div>
         <div class="rsub">${esc(l.reason||'—')} · lent ${moneyR(l.principal)}${l.dueDate && l.status!=='settled'?' · due '+fmtDay(l.dueDate):''}</div></div>
       <div class="ramt tnum ${os>0?(l.direction==='lent'?'pos':'neg'):'faint'}">${money(os)}<small>outstanding</small></div>
+      <button class="btn sm" data-settlel="${l.id}" style="flex-basis:100%;margin-top:6px">${l.status==='settled'?'Reopen':'Mark settled'}</button>
     </div>`;
   }).join('') : `<div class="empty">Nothing here</div>`;
 
@@ -957,6 +958,13 @@ function renderPeople(){
   $('#addLent').onclick = ()=> openLoanSheet({direction:'lent'});
   $('#addBor').onclick  = ()=> openLoanSheet({direction:'borrowed'});
   $$('[data-loan]').forEach(r=> r.onclick = ()=> openLoanSheet(loanById(r.dataset.loan)));
+  $$('[data-settlel]').forEach(b=> b.onclick = async (e)=>{
+    e.stopPropagation();
+    const l = loanById(b.dataset.settlel);
+    l.status = l.status==='settled' ? 'open' : 'settled';
+    await idbPut('loans', l); await reloadCache(); render();
+    toast(l.status==='settled' ? 'Marked settled' : 'Reopened');
+  });
 }
 
 /* ---------- REPORTS ---------- */
@@ -2545,10 +2553,14 @@ function openCategoryManager(){
         <button class="btn sm" data-favc="${c.id}">${c.isFavourite?'★':'☆'}</button>
         <button class="btn sm" data-rtc="${c.id}">${c.isRoutine?'R':'r'}</button>
         <button class="btn sm danger" data-delc="${c.id}">✕</button>
-        ${c.kind!=='income'?`<div style="flex-basis:100%;display:flex;align-items:center;gap:8px;margin-top:6px">
+        ${c.kind!=='income'?`<div style="flex-basis:100%;display:flex;align-items:center;gap:8px;margin-top:6px;flex-wrap:wrap">
           <span class="lbl" style="margin:0">Class</span>
           <select data-clsc="${c.id}" style="max-width:120px;padding:6px 8px">
             ${['need','want','saving','debt','na'].map(k=>`<option ${c.class===k?'selected':''}>${k}</option>`).join('')}
+          </select>
+          <span class="lbl" style="margin:0">Priority</span>
+          <select data-pric="${c.id}" style="max-width:120px;padding:6px 8px">
+            ${['','mandate','need','want','wish','extra','invest'].map(k=>`<option value="${k}" ${(c.priority||'')===k?'selected':''}>${PRIORITY_LABEL[k]}</option>`).join('')}
           </select>
         </div>`:''}
         ${c.kind==='expense'?`<div style="flex-basis:100%;display:flex;align-items:center;gap:8px;margin-top:6px">
@@ -2569,6 +2581,7 @@ function openCategoryManager(){
   $$('[data-rtc]').forEach(b=> b.onclick = async ()=>{ const c=catById(b.dataset.rtc); c.isRoutine=!c.isRoutine; await idbPut('categories',c); await reloadCache(); openCategoryManager(); });
   $$('[data-budc]').forEach(inp=> inp.onchange = async ()=>{ const c=catById(inp.dataset.budc); c.monthlyBudget=parseAmount(inp.value); await idbPut('categories',c); await reloadCache(); toast('Budget set'); });
   $$('[data-clsc]').forEach(sel=> sel.onchange = async ()=>{ const c=catById(sel.dataset.clsc); c.class=sel.value; await idbPut('categories',c); await reloadCache(); openCategoryManager(); toast('Class updated'); });
+  $$('[data-pric]').forEach(sel=> sel.onchange = async ()=>{ const c=catById(sel.dataset.pric); c.priority=sel.value; await idbPut('categories',c); await reloadCache(); openCategoryManager(); toast('Priority updated'); });
   $$('[data-delc]').forEach(b=> b.onclick = async ()=>{
     if(cache.transactions.some(t=>splitsOf(t).some(s=>s.categoryId===b.dataset.delc))) return toast('In use — cannot delete');
     await idbDel('categories', b.dataset.delc); await reloadCache(); openCategoryManager();
@@ -2576,8 +2589,9 @@ function openCategoryManager(){
 }
 const CAT_COLORS = ['#1f7a54','#2f6b8a','#3f4fa0','#5a3f8f','#7a3f8f','#b04a7a','#a3384c','#b0472e','#b07d1f','#7a5230','#5a7a2f','#2f8a8a','#45526e','#5a635e','#8b938d'];
 const CATEGORY_ICONS = ['🍽️','🍿','☕','🍕','🛒','🏠','💡','🚰','📶','⛽','🧹','📚','💊','🛡️','📺','🛍️','🎬','✈️','🎀','🏦','📆','💳','🐖','💼','🧾','📈','↩️','🎁','🪔','🪙','🌾','₿','📦','🎯','🤝','📥','🔔','⚙️','🚗','🏥','📱','🐾','🎓','❓'];
-const APP_VERSION = 22;
+const APP_VERSION = 23;
 const APP_CHANGELOG = [
+  {v:23, date:'2026-10-05', notes:['Inline Priority dropdown in the category list (next to Class)','Inline "Mark settled / Reopen" button for loans in the People tab']},
   {v:22, date:'2026-10-05', notes:['Inline Class (Need/Want/Saving/Debt) dropdown right in the category list — no need to open a separate edit screen just to change it']},
   {v:21, date:'2026-10-05', notes:['Fixed: Android back button could close out of an unsaved transaction without asking','Added this "What\'s new" changelog']},
   {v:20, date:'2026-10-05', notes:['Manual "Check for updates" button in Settings']},
