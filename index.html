@@ -1223,12 +1223,36 @@ function openCatDrill(catId){
 function openSheet(html){
   $('#sheet').innerHTML = `<div class="grab"></div>` + html;
   $('#scrim').classList.add('open');
+  armSheetBackGuard();
 }
-function closeSheet(){ $('#scrim').classList.remove('open'); }
+function closeSheet(){ $('#scrim').classList.remove('open'); disarmSheetBackGuard(); }
 $('#scrim').addEventListener('click', e=>{
   if(e.target.id!=='scrim') return;
   if(isAddSheetDirty() && !confirm('Discard this unsaved transaction?')) return;
   closeSheet();
+});
+// Android's back button/gesture doesn't trigger the scrim click above, so it bypassed
+// the discard confirmation entirely. Trap it the same way modal sheets commonly do:
+// push one history entry while any sheet is open, and treat a back-triggered pop as
+// an attempt to close that sheet, running it through the same dirty-check.
+let sheetBackGuardArmed = false;
+function armSheetBackGuard(){
+  if(!sheetBackGuardArmed){ history.pushState({sheetGuard:true}, ''); sheetBackGuardArmed = true; }
+}
+function disarmSheetBackGuard(){
+  // Deliberately does NOT call history.back() here: this app's code very often does
+  // closeSheet() immediately followed by opening a different sheet (which pushes a
+  // fresh guard entry). Pairing an async history.back() with an immediate synchronous
+  // pushState() right after it corrupts the history stack over repeated cycles. Just
+  // disarm the flag and leave the now-inert pushed entry behind — harmless in a
+  // single-page app since it carries no real navigation, just bookkeeping.
+  sheetBackGuardArmed = false;
+}
+window.addEventListener('popstate', ()=>{
+  if(!sheetBackGuardArmed) return;
+  sheetBackGuardArmed = false;
+  if(isAddSheetDirty() && !confirm('Discard this unsaved transaction?')){ armSheetBackGuard(); return; }
+  $('#scrim').classList.remove('open');
 });
 
 let addDraft = null;
@@ -2090,6 +2114,7 @@ function openSettings(){
     <div class="section-label" style="margin:0 0 8px">App version</div>
     <div class="btnrow">
       <button class="btn sm" id="checkUpdateBtn">🔄 Check for updates</button>
+      <button class="btn sm" id="changelogBtn">ℹ️ What's new (v${APP_VERSION})</button>
     </div>
     <p class="hintline">Pulls the latest version of the app now, instead of waiting for it to update in the background.</p>
     <div class="divider"></div>
@@ -2176,6 +2201,7 @@ function openSettings(){
   };
   $('#msd').onchange = ()=>{ saveSettings({monthStartDay:+$('#msd').value}).then(()=>{ render(); }); };
   $('#checkUpdateBtn').onclick = checkForUpdate;
+  $('#changelogBtn').onclick = openChangelogSheet;
   $('#expBtn').onclick = exportJSON;
   $('#impBtn').onclick = ()=> $('#impFile').click();
   $('#impFile').onchange = importJSON;
@@ -2543,6 +2569,30 @@ function openCategoryManager(){
 }
 const CAT_COLORS = ['#1f7a54','#2f6b8a','#3f4fa0','#5a3f8f','#7a3f8f','#b04a7a','#a3384c','#b0472e','#b07d1f','#7a5230','#5a7a2f','#2f8a8a','#45526e','#5a635e','#8b938d'];
 const CATEGORY_ICONS = ['🍽️','🍿','☕','🍕','🛒','🏠','💡','🚰','📶','⛽','🧹','📚','💊','🛡️','📺','🛍️','🎬','✈️','🎀','🏦','📆','💳','🐖','💼','🧾','📈','↩️','🎁','🪔','🪙','🌾','₿','📦','🎯','🤝','📥','🔔','⚙️','🚗','🏥','📱','🐾','🎓','❓'];
+const APP_VERSION = 21;
+const APP_CHANGELOG = [
+  {v:21, date:'2026-10-05', notes:['Fixed: Android back button could close out of an unsaved transaction without asking','Added this "What\'s new" changelog']},
+  {v:20, date:'2026-10-05', notes:['Manual "Check for updates" button in Settings']},
+  {v:19, date:'2026-10-05', notes:['Confirm before discarding an unsaved transaction','Snacks category','Gold Chit / Money Chit asset types (replacing the old generic Chit fund)','Icon picker for custom categories']},
+  {v:18, date:'2026-10-03', notes:['Home-screen "Add expense" quick shortcut']},
+  {v:17, date:'2026-10-03', notes:['Voice note dictation on transactions','PIN / biometric app lock']},
+  {v:16, date:'2026-10-03', notes:['Note field added to Credit cards, Savings goals, Fixed assets, Recurring items']},
+  {v:15, date:'2026-10-03', notes:['Note field added to Accounts']},
+  {v:14, date:'2026-10-03', notes:['Yearly recurring items','Planned Expenses report (year-on-year / month-on-month)']},
+  {v:13, date:'2026-10-03', notes:['Split one transaction across multiple categories','CSV export of transactions']},
+  {v:12, date:'2026-10-03', notes:['"Update ready" prompt when a new version has installed']},
+  {v:11, date:'2026-10-03', notes:['Custom tags on transactions','Net worth trend chart','Chit fund asset type']},
+  {v:10, date:'2026-10-03', notes:['Transaction search','Loan repayment due-date reminders']},
+  {v:9,  date:'2026-10-03', notes:['Printable period statement','Receipt photo attachments','Manual Google Drive backup/restore']},
+  {v:8,  date:'2026-10-02', notes:['"Share backup" button (send the backup file via Gmail or any app)']},
+  {v:7,  date:'2026-10-02', notes:['Backup reminder','Bank statement CSV import','Due-bill browser notifications']},
+  {v:6,  date:'2026-10-02', notes:['Add a credit card or a custom category without leaving the Add-transaction screen']},
+  {v:5,  date:'2026-10-02', notes:['Mandate / Need / Want / Wish / Extra spend-priority tag on categories']},
+  {v:4,  date:'2026-08-30', notes:['Categories fully editable (rename, icon, colour)']},
+  {v:3,  date:'2026-08-30', notes:['Asset types for Holdings: Stocks, Mutual Funds, Gold, Land, FD/RD, Crypto, custom types']},
+  {v:2,  date:'2026-08-30', notes:['Credit cards & statements','Recurring bills & routines','Budgets','Savings goals','Calendar heatmap + 6-month trend in Reports']},
+  {v:1,  date:'2026-08-30', notes:['First release: accounts, categories, transactions, net worth, JSON export/import']},
+];
 function openCategorySheet(c){
   if(!c) return;
   openSheet(`
@@ -2775,6 +2825,19 @@ async function checkForUpdate(){
   try{ await reg.update(); }catch(err){}
   reg.removeEventListener('updatefound', onUpdateFound);
   setTimeout(()=>{ if(!foundUpdate) toast('You already have the latest version'); }, 800);
+}
+function openChangelogSheet(){
+  openSheet(`
+    <h2>What's new</h2>
+    <div class="card tight" style="max-height:60vh;overflow:auto">
+      ${APP_CHANGELOG.map(e=>`<div class="row" style="flex-wrap:wrap;align-items:flex-start">
+        <div class="rmain">
+          <div class="rtitle">v${e.v} <span class="faint" style="font-weight:400">· ${fmtDay(e.date)}</span></div>
+          <div class="rsub"><ul style="margin:4px 0 0; padding-left:18px">${e.notes.map(n=>`<li>${esc(n)}</li>`).join('')}</ul></div>
+        </div>
+      </div>`).join('')}
+    </div>
+  `);
 }
 
 (async function boot(){
