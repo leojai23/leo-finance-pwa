@@ -2087,6 +2087,12 @@ function openSettings(){
       <select id="msd">${Array.from({length:28},(_,i)=>i+1).map(d=>`<option ${settings.monthStartDay===d?'selected':''}>${d}</option>`).join('')}</select>
     </label>
     <div class="divider"></div>
+    <div class="section-label" style="margin:0 0 8px">App version</div>
+    <div class="btnrow">
+      <button class="btn sm" id="checkUpdateBtn">🔄 Check for updates</button>
+    </div>
+    <p class="hintline">Pulls the latest version of the app now, instead of waiting for it to update in the background.</p>
+    <div class="divider"></div>
     <div class="section-label" style="margin:0 0 8px">Backup</div>
     <div class="btnrow">
       <button class="btn" id="expBtn">⬇ Export JSON</button>
@@ -2169,6 +2175,7 @@ function openSettings(){
     applyTheme(b.dataset.t); saveSettings({theme:b.dataset.t});
   };
   $('#msd').onchange = ()=>{ saveSettings({monthStartDay:+$('#msd').value}).then(()=>{ render(); }); };
+  $('#checkUpdateBtn').onclick = checkForUpdate;
   $('#expBtn').onclick = exportJSON;
   $('#impBtn').onclick = ()=> $('#impFile').click();
   $('#impFile').onchange = importJSON;
@@ -2755,6 +2762,19 @@ async function enableBiometricUnlock(){
 }
 async function disableBiometricUnlock(){
   await saveSettings({lockCredId:''}); openSettings(); toast('Biometric unlock removed');
+}
+
+async function checkForUpdate(){
+  if(!('serviceWorker' in navigator)) return toast('Not supported in this browser');
+  const reg = await navigator.serviceWorker.getRegistration();
+  if(!reg) return toast('No service worker registered yet');
+  toast('Checking for updates…');
+  let foundUpdate = false;
+  const onUpdateFound = ()=>{ foundUpdate = true; };
+  reg.addEventListener('updatefound', onUpdateFound);
+  try{ await reg.update(); }catch(err){}
+  reg.removeEventListener('updatefound', onUpdateFound);
+  setTimeout(()=>{ if(!foundUpdate) toast('You already have the latest version'); }, 800);
 }
 
 (async function boot(){
