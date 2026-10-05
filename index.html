@@ -559,6 +559,7 @@ const SEED_CATS = [
   ['Internet / Mobile','expense','need',1,0,'📶','#3f6fa0','need'],
   ['Groceries & Household','expense','need',1,1,'🛒','#5a7a2f','need'],
   ['Food & Dining','expense','want',1,1,'🍽️','#b0472e','want'],
+  ['Snacks','expense','want',0,1,'🍿','#b07d1f','want'],
   ['Transport / Fuel','expense','need',1,1,'⛽','#7a5230','need'],
   ['Domestic help','expense','need',1,0,'🧹','#6a5a8a','need'],
   ['School / Fees','expense','need',1,0,'📚','#3f4fa0','need'],
@@ -587,7 +588,8 @@ const PRESET_ASSET_TYPES = [
   {name:'Land / Real estate',quantityUnit:'sqft',  icon:'🌾', fields:[{key:'location',label:'Location',kind:'text'},{key:'survey',label:'Survey / plot no',kind:'text'},{key:'regdate',label:'Registration date',kind:'date'}]},
   {name:'FD / RD',           quantityUnit:'',       icon:'🏦', fields:[{key:'bank',label:'Bank',kind:'text'},{key:'rate',label:'Interest %',kind:'text'},{key:'maturity',label:'Maturity date',kind:'date'}]},
   {name:'Crypto',            quantityUnit:'coins',  icon:'₿', fields:[{key:'asset',label:'Asset (BTC / ETH…)',kind:'text'},{key:'wallet',label:'Wallet / exchange',kind:'text'}]},
-  {name:'Chit fund',         quantityUnit:'',       icon:'🪔', fields:[{key:'group',label:'Chit group / company',kind:'text'},{key:'duration',label:'Duration (months)',kind:'text'},{key:'monthly',label:'Monthly contribution ₹',kind:'text'}]},
+  {name:'Money Chit',        quantityUnit:'',       icon:'🪔', fields:[{key:'group',label:'Chit group / company',kind:'text'},{key:'duration',label:'Duration (months)',kind:'text'},{key:'monthly',label:'Monthly contribution ₹',kind:'text'}]},
+  {name:'Gold Chit',         quantityUnit:'g',      icon:'🥇', fields:[{key:'group',label:'Chit group / company',kind:'text'},{key:'duration',label:'Duration (months)',kind:'text'},{key:'monthly',label:'Monthly instalment ₹',kind:'text'}]},
   {name:'Other',             quantityUnit:'',       icon:'📦', fields:[]}
 ];
 async function seedAssetTypesIfEmpty(){
@@ -597,15 +599,25 @@ async function seedAssetTypesIfEmpty(){
   cache.assetTypes = await idbGetAll('assetTypes');
   cache.assetTypes.sort((a,b)=>(a.order||0)-(b.order||0));
 }
-async function migrateChitAssetTypeIfNeeded(){
-  if(await metaGet('chitTypeMigrated')) return;
-  if(!cache.assetTypes.some(t=>t.name==='Chit fund')){
-    const chit = PRESET_ASSET_TYPES.find(t=>t.name==='Chit fund');
-    await idbPut('assetTypes', {id:uid(), builtIn:true, order:cache.assetTypes.length, ...chit});
-    cache.assetTypes = await idbGetAll('assetTypes');
-    cache.assetTypes.sort((a,b)=>(a.order||0)-(b.order||0));
+async function migrateChitTypesV2IfNeeded(){
+  if(await metaGet('chitTypesV2Migrated')) return;
+  const existingChit = cache.assetTypes.find(t=>t.name==='Chit fund');
+  const hasMoneyChit = cache.assetTypes.some(t=>t.name==='Money Chit');
+  if(existingChit && !hasMoneyChit){
+    existingChit.name = 'Money Chit';
+    await idbPut('assetTypes', existingChit);
+  } else if(!hasMoneyChit){
+    const preset = PRESET_ASSET_TYPES.find(t=>t.name==='Money Chit');
+    await idbPut('assetTypes', {id:uid(), builtIn:true, order:cache.assetTypes.length, ...preset});
   }
-  await metaPut('chitTypeMigrated', true);
+  if(!cache.assetTypes.some(t=>t.name==='Gold Chit')){
+    cache.assetTypes = await idbGetAll('assetTypes');
+    const preset = PRESET_ASSET_TYPES.find(t=>t.name==='Gold Chit');
+    await idbPut('assetTypes', {id:uid(), builtIn:true, order:cache.assetTypes.length, ...preset});
+  }
+  cache.assetTypes = await idbGetAll('assetTypes');
+  cache.assetTypes.sort((a,b)=>(a.order||0)-(b.order||0));
+  await metaPut('chitTypesV2Migrated', true);
 }
 async function seedIfNeeded(){
   if(await metaGet('seeded')) return;
@@ -625,6 +637,15 @@ async function migratePrioritiesIfNeeded(){
   }
   cache.categories = await idbGetAll('categories');
   await metaPut('priorityMigrated', true);
+}
+async function migrateSnackCategoryIfNeeded(){
+  if(await metaGet('snackCatMigrated')) return;
+  if(!cache.categories.some(c=>c.name==='Snacks')){
+    await idbPut('categories', {id:uid(), name:'Snacks', kind:'expense', class:'want', priority:'want',
+      isRoutine:false, isFavourite:true, icon:'🍿', color:'#b07d1f', order:cache.categories.length, monthlyBudget:0});
+    cache.categories = await idbGetAll('categories');
+  }
+  await metaPut('snackCatMigrated', true);
 }
 
 /* ============================================================
@@ -1204,7 +1225,11 @@ function openSheet(html){
   $('#scrim').classList.add('open');
 }
 function closeSheet(){ $('#scrim').classList.remove('open'); }
-$('#scrim').addEventListener('click', e=>{ if(e.target.id==='scrim') closeSheet(); });
+$('#scrim').addEventListener('click', e=>{
+  if(e.target.id!=='scrim') return;
+  if(isAddSheetDirty() && !confirm('Discard this unsaved transaction?')) return;
+  closeSheet();
+});
 
 let addDraft = null;
 function openAddSheet(seed){
@@ -1216,7 +1241,14 @@ function openAddSheet(seed){
     if(addDraft.kind==='expense' && !addDraft.fromId) addDraft.fromId = (last && last.fromId) || (cache.accounts[0]&&cache.accounts[0].id);
     if(addDraft.kind==='income'  && !addDraft.toId)   addDraft.toId   = (last && last.toId) || (cache.accounts[0]&&cache.accounts[0].id);
   }
+  addDraftBaseline = JSON.stringify(addDraft);
   drawAddSheet(editing);
+}
+let addDraftBaseline = null;
+function isAddSheetDirty(){
+  if(!$('#saveTx') || addDraftBaseline===null) return false;
+  syncDraftFromInputs();
+  return JSON.stringify(addDraft) !== addDraftBaseline;
 }
 function splitRowHtml(s, cats){
   return `<div class="btnrow" data-splitrow style="align-items:center">
@@ -1421,12 +1453,17 @@ function openQuickCategorySheet(kind, onSaved){
       <label class="fld" style="flex:2"><span class="lbl">Name</span><input id="qcName" placeholder="e.g. Pet care"></label>
       <label class="fld" style="flex:1"><span class="lbl">Icon</span><input id="qcIcon" value="•" maxlength="2"></label>
     </div>
+    <div class="lbl">Pick an icon (or type your own above)</div>
+    <div class="chips" id="qcIcons" style="margin-bottom:14px">
+      ${CATEGORY_ICONS.map(ic=>`<button class="chip" data-icon="${ic}">${ic}</button>`).join('')}
+    </div>
     <div class="lbl">Colour</div>
     <div class="chips" id="qcColors" style="margin-bottom:14px">
       ${CAT_COLORS.map(col=>`<button class="chip" data-col="${col}" style="border-color:${col};${color===col?`background:${col};color:#fff`:''}"><span style="width:12px;height:12px;border-radius:3px;background:${col};display:inline-block"></span></button>`).join('')}
     </div>
     <button class="btn primary wide" id="qcSave">Add category</button>
   `);
+  $('#qcIcons').onclick = e=>{ const b=e.target.closest('button'); if(!b) return; $('#qcIcon').value = b.dataset.icon; };
   $('#qcColors').onclick = e=>{ const b=e.target.closest('button'); if(!b) return; color=b.dataset.col;
     $$('#qcColors button').forEach(x=>{ const on=x.dataset.col===color; x.style.background=on?color:''; x.style.color=on?'#fff':''; }); };
   $('#qcSave').onclick = async ()=>{
@@ -2498,6 +2535,7 @@ function openCategoryManager(){
   });
 }
 const CAT_COLORS = ['#1f7a54','#2f6b8a','#3f4fa0','#5a3f8f','#7a3f8f','#b04a7a','#a3384c','#b0472e','#b07d1f','#7a5230','#5a7a2f','#2f8a8a','#45526e','#5a635e','#8b938d'];
+const CATEGORY_ICONS = ['🍽️','🍿','☕','🍕','🛒','🏠','💡','🚰','📶','⛽','🧹','📚','💊','🛡️','📺','🛍️','🎬','✈️','🎀','🏦','📆','💳','🐖','💼','🧾','📈','↩️','🎁','🪔','🪙','🌾','₿','📦','🎯','🤝','📥','🔔','⚙️','🚗','🏥','📱','🐾','🎓','❓'];
 function openCategorySheet(c){
   if(!c) return;
   openSheet(`
@@ -2505,6 +2543,10 @@ function openCategorySheet(c){
     <div class="btnrow">
       <label class="fld" style="flex:2"><span class="lbl">Name</span><input id="ceName" value="${esc(c.name)}"></label>
       <label class="fld" style="flex:1"><span class="lbl">Icon</span><input id="ceIcon" value="${esc(c.icon)}" maxlength="2"></label>
+    </div>
+    <div class="lbl">Pick an icon (or type your own above)</div>
+    <div class="chips" id="ceIcons" style="margin-bottom:14px">
+      ${CATEGORY_ICONS.map(ic=>`<button class="chip" data-icon="${ic}">${ic}</button>`).join('')}
     </div>
     <label class="fld"><span class="lbl">Class (for the Needs / Wants / Savings split)</span><select id="ceClass">
       ${['need','want','saving','debt','na'].map(k=>`<option ${c.class===k?'selected':''}>${k}</option>`).join('')}</select></label>
@@ -2517,6 +2559,7 @@ function openCategorySheet(c){
     <button class="btn primary wide" id="ceSave">Save</button>
   `);
   let color = c.color;
+  $('#ceIcons').onclick = e=>{ const b=e.target.closest('button'); if(!b) return; $('#ceIcon').value = b.dataset.icon; };
   $('#ceColors').onclick = e=>{ const b=e.target.closest('button'); if(!b) return; color=b.dataset.col;
     $$('#ceColors button').forEach(x=>{ const on=x.dataset.col===color; x.style.background=on?color:''; x.style.color=on?'#fff':''; }); };
   $('#ceSave').onclick = async ()=>{
@@ -2720,8 +2763,9 @@ async function disableBiometricUnlock(){
     await seedIfNeeded();
     await reloadCache();
     await migratePrioritiesIfNeeded();
+    await migrateSnackCategoryIfNeeded();
     await seedAssetTypesIfEmpty();
-    await migrateChitAssetTypeIfNeeded();
+    await migrateChitTypesV2IfNeeded();
     await snapshotNetWorthIfNeeded();
     lastExportAt = await metaGet('lastExport');
     checkDueNotifications();
